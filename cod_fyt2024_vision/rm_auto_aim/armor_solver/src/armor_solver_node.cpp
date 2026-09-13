@@ -20,6 +20,8 @@
 
 #include <tf2/exceptions.h>
 // std
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <rm_utils/heartbeat.hpp>
 #include <vector>
@@ -103,8 +105,8 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
     double t = dt_, x = s2qx_, y = s2qy_, z = s2qz_, yaw = s2qyaw_, r = s2qr_;
     double q_x_x = pow(t, 4) / 4 * x, q_x_vx = pow(t, 3) / 2 * x, q_vx_vx = pow(t, 2) * x;
     double q_y_y = pow(t, 4) / 4 * y, q_y_vy = pow(t, 3) / 2 * y, q_vy_vy = pow(t, 2) * y;
-    double q_z_z = pow(t, 4) / 4 * x, q_z_vz = pow(t, 3) / 2 * x, q_vz_vz = pow(t, 2) * z;
-    double q_yaw_yaw = pow(t, 4) / 4 * yaw, q_yaw_vyaw = pow(t, 3) / 2 * x,
+    double q_z_z = pow(t, 4) / 4 * z, q_z_vz = pow(t, 3) / 2 * z, q_vz_vz = pow(t, 2) * z;
+    double q_yaw_yaw = pow(t, 4) / 4 * yaw, q_yaw_vyaw = pow(t, 3) / 2 * yaw,
            q_vyaw_vyaw = pow(t, 2) * yaw;
     double q_r = pow(t, 4) / 4 * r;
     // clang-format off
@@ -259,8 +261,8 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
     tracker_->init(armors_msg);
     target_msg.tracking = false;
   } else {
-    dt_ = (time - last_time_).seconds();
-    tracker_->lost_thres = std::abs(static_cast<int>(lost_time_thres_ / dt_));
+    dt_ = std::max((time - last_time_).seconds(), 1e-3);
+    tracker_->lost_thres = std::max(1, static_cast<int>(lost_time_thres_ / dt_));
     tracker_->update(armors_msg);
     // Publish measurement
     measure_msg.x = tracker_->measurement(0);

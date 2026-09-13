@@ -19,6 +19,8 @@
 
 #include "rm_utils/math/extended_kalman_filter.hpp"
 
+#include <cmath>
+
 namespace fyt {
 ExtendedKalmanFilter::ExtendedKalmanFilter(const VecVecFunc &f,
                                            const VecVecFunc &h,
@@ -57,11 +59,46 @@ Eigen::MatrixXd ExtendedKalmanFilter::predict() noexcept {
 Eigen::MatrixXd ExtendedKalmanFilter::update(const Eigen::VectorXd &z) noexcept {
   H = jacobian_h(x_pri), R = update_R(z);
 
-  K = P_pri * H.transpose() * (H * P_pri * H.transpose() + R).inverse();
-  x_post = x_pri + K * (z - h(x_pri));
-  P_post = (I - K * H) * P_pri;
+  const Eigen::MatrixXd S = H * P_pri * H.transpose() + R;
+  const Eigen::VectorXd residual = z - h(x_pri);
+  const Eigen::LDLT<Eigen::MatrixXd> decomposition(S);
+  if (decomposition.info() != Eigen::Success || !S.allFinite()) {
+    x_post = x_pri;
+    P_post = P_pri;
+    return x_post;
+  }
+
+  const Eigen::VectorXd innovation_solution = decomposition.solve(residual);
+  const Eigen::MatrixXd gain_solution = decomposition.solve(H * P_pri);
+  K = gain_solution.transpose();
+  x_post = x_pri + K * residual;
+
+  // Joseph form preserves covariance symmetry and positive semidefiniteness
+  // better than the simplified (I - KH)P expression.
+  const Eigen::MatrixXd identity_minus_gain = I - K * H;
+  P_post = identity_minus_gain * P_pri * identity_minus_gain.transpose() + K * R * K.transpose();
+  P_post = (P_post + P_post.transpose()) * 0.5;
+
+  last_nis_ = residual.dot(innovation_solution);
+  nis_failures_.push_back(!std::isfinite(last_nis_) || last_nis_ > kNisThreshold);
+  if (nis_failures_.size() > kNisWindowSize) {
+    nis_failures_.pop_front();
+  }
 
   return x_post;
+}
+
+bool ExtendedKalmanFilter::isDiverged() const noexcept {
+  if (nis_failures_.size() < kNisWindowSize) {
+    return false;
+  }
+  const auto failures = std::count(nis_failures_.begin(), nis_failures_.end(), true);
+  return failures >= static_cast<std::size_t>(0.4 * kNisWindowSize);
+}
+
+void ExtendedKalmanFilter::resetInnovationHistory() noexcept {
+  nis_failures_.clear();
+  last_nis_ = 0.0;
 }
 
 }  // namespace fyt

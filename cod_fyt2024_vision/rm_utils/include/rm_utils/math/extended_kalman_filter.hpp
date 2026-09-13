@@ -21,7 +21,9 @@
 #define RM_UTILS_KALMAN_FILTER_HPP_
 
 #include <Eigen/Dense>
+#include <deque>
 #include <functional>
+#include <numeric>
 
 namespace fyt {
 
@@ -49,6 +51,12 @@ public:
 
   // Update the estimated state based on measurement
   Eigen::MatrixXd update(const Eigen::VectorXd &z) noexcept;
+
+  // Return true after a sustained sequence of statistically inconsistent
+  // measurements. The caller can then discard the current track.
+  bool isDiverged() const noexcept;
+
+  void resetInnovationHistory() noexcept;
 
 private:
   // Process nonlinear vector function
@@ -86,6 +94,11 @@ private:
   Eigen::VectorXd x_pri;
   // Posteriori state
   Eigen::VectorXd x_post;
+
+  std::deque<bool> nis_failures_;
+  double last_nis_{0.0};
+  static constexpr size_t kNisWindowSize = 50;
+  static constexpr double kNisThreshold = 9.49;
 };
 
 }  // namespace fyt
