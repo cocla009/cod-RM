@@ -19,15 +19,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 #######################
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/cmake_modules)
-set(EXTERNAL_INCLUDE_DIRS ${G2O_INCLUDE_DIR})
-set(EXTERNAL_LIBS ${G2O_LIBRARIES})
-
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(TBB REQUIRED COMPONENTS tbb)
-find_package(G2O REQUIRED)
 find_package(fmt REQUIRED)
-find_package(Sophus REQUIRED)
 ament_auto_find_build_dependencies()
 
 ###########
@@ -40,16 +35,11 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
 
 target_include_directories(${PROJECT_NAME} PUBLIC
 ${OpenCV_INCLUDE_DIRS}
-${G2O_INCLUDE_DIRS}
-${Sophus_INCLUDE_DIRS}
 ${EIGEN3_INCLUDE_DIRS}
 )
 
 target_link_libraries(${PROJECT_NAME}
 ${OpenCV_LIBS}
-g2o_core
-g2o_stuff
-g2o_solver_dense
 fmt::fmt
 tbb
 )

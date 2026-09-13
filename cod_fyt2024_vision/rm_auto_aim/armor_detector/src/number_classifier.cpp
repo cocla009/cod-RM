@@ -62,7 +62,7 @@ cv::Mat NumberClassifier::extractNumber(const cv::Mat &src, const Armor &armor) 
   static const int small_armor_width = 32;
   static const int large_armor_width = 54;
   // Number ROI size
-  static const cv::Size roi_size(20, 28);
+  static const cv::Size roi_size(20, 25);
   static const cv::Size input_size(28, 28);
 
   // Warp perspective transform

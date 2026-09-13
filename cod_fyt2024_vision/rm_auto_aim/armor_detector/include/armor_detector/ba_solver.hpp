@@ -20,43 +20,34 @@
 // std
 #include <array>
 #include <cstddef>
-#include <tuple>
+#include <deque>
 #include <vector>
 // 3rd party
 #include <Eigen/Core>
-#include <Eigen/Dense>
 #include <opencv2/core.hpp>
-#include <sophus/so3.hpp>
-#include <std_msgs/msg/float32.hpp>
-// g2o
-#include <g2o/core/base_multi_edge.h>
-#include <g2o/core/base_vertex.h>
-#include <g2o/core/optimization_algorithm.h>
-#include <g2o/core/optimization_algorithm_factory.h>
-#include <g2o/core/optimization_algorithm_levenberg.h>
-#include <g2o/core/robust_kernel.h>
-#include <g2o/core/sparse_optimizer.h>
 // project
-#include "armor_detector/graph_optimizer.hpp"
 #include "armor_detector/types.hpp"
 
 namespace fyt::auto_aim {
 
-// BA algorithm based Optimizer for the armor pose estimation (Particularly for
-// the Yaw angle)
+// Two-stage reprojection search for the armor yaw. It keeps the PnP translation
+// and fixed pitch prior while avoiding a heavyweight graph-optimizer runtime.
 class BaSolver {
 public:
-  BaSolver(std::array<double, 9> &camera_matrix, std::vector<double> &dist_coeffs);
+  BaSolver(const std::array<double, 9> &camera_matrix, const std::vector<double> &dist_coeffs);
 
-  // Solve the armor pose using the BA algorithm, need the result of PnP
+  // Solve the armor yaw and update the camera-to-armor rotation matrix.
   bool solveBa(const std::deque<Armor> &armors, cv::Mat &rmat) noexcept;
 
 private:
-  CameraInternalK cam_internal_k_;
+  double computeReprojError(const Eigen::Matrix3d &camera2imu,
+                            const Eigen::Vector3d &tvec,
+                            const std::vector<cv::Point2f> &landmarks,
+                            const std::vector<Eigen::Vector3d> &object_points,
+                            double pitch,
+                            double yaw) const noexcept;
 
-  g2o::SparseOptimizer optimizer_;
-  g2o::OptimizationAlgorithmProperty solver_property_;
-  g2o::OptimizationAlgorithmLevenberg *lm_algorithm_;
+  CameraInternalK cam_internal_k_;
 };
 
 }  // namespace fyt::auto_aim

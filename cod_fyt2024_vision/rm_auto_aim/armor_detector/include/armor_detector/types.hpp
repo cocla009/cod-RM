@@ -26,7 +26,6 @@
 #include <opencv2/core.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/imgproc.hpp>
-#include <sophus/so3.hpp>
 // project
 #include "rm_utils/assert.hpp"
 #include "rm_utils/common.hpp"

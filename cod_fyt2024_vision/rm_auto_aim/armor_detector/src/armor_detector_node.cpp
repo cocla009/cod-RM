@@ -63,7 +63,7 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions &options)
 
   // Tricks to make pose more accurate
   use_ba_ = this->declare_parameter("use_ba", true);
-  pnp_solution_selection_ = this->declare_parameter("pnp_solution_selection", false);
+  pnp_solution_selection_ = this->declare_parameter("pnp_solution_selection", true);
 
   // Armors Publisher
   armors_pub_ = this->create_publisher<rm_interfaces::msg::Armors>("armor_detector/armors",
@@ -384,6 +384,9 @@ void ArmorDetectorNode::PnPSolutionsSelection(const Armor &armor,
   auto pnp_solutions = pnp_solver_->getAllSolutions();
   auto rvecs = std::move(pnp_solutions.at(0));
   auto tvecs = std::move(pnp_solutions.at(1));
+  if (rvecs.empty() || rvecs.size() != tvecs.size()) {
+    return;
+  }
 
   size_t best_idx = 0;
   double prior = armor.number == "outpost" ? -FIFTTEN_DEGREE_RAD : FIFTTEN_DEGREE_RAD;
@@ -396,11 +399,10 @@ void ArmorDetectorNode::PnPSolutionsSelection(const Armor &armor,
     }
   }
 
-  if (best_idx != 0) {
+  if (best_idx != 0 && best_idx < tvecs.size()) {
     FYT_DEBUG("armor_detector", "PnP Solution Changed!");
     rvec = rvecs[best_idx];
-    // Take average
-    tvec = std::accumulate(tvecs.begin(), tvecs.end(), cv::Mat::zeros(3, 1, CV_64F)) / tvecs.size();
+    tvec = tvecs[best_idx];
   }
 }
 
