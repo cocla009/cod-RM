@@ -66,7 +66,7 @@ private:
 
   // Armor tracker
   double s2qx_, s2qy_, s2qz_, s2qyaw_, s2qr_, s2qdelta_r_, s2qdz_;
-  double r_x_, r_y_, r_z_, r_yaw_;
+  double r_azimuth_, r_elevation_, r_distance_, r_armor_yaw_;
   double lost_time_thres_;
   std::unique_ptr<Tracker> tracker_;
 

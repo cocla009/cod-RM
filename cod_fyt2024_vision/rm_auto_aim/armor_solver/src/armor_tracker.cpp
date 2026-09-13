@@ -19,6 +19,7 @@
 #include "armor_solver/armor_tracker.hpp"
 // std
 #include <cfloat>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
@@ -97,24 +98,30 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
 
     if (has_candidate && min_position_diff < max_match_distance_ &&
         yaw_diff < max_match_yaw_diff_) {
-      matched = true;
       tracked_armor = matched_armor;
       active_armor_index_ = matched_index;
       auto p = tracked_armor.pose.position;
-      measurement = Eigen::Vector4d(p.x, p.y, p.z, matched_yaw);
-      target_state = ekf.update(measurement);
-      if (ekf.isDiverged()) {
-        FYT_WARN("armor_solver", "EKF innovation statistics diverged, resetting tracker");
-        tracker_state = LOST;
-        ekf.resetInnovationHistory();
-        return;
+      if (setSphericalMeasurement(p, matched_yaw)) {
+        matched = true;
+        target_state = ekf.update(measurement);
+        if (ekf.isDiverged()) {
+          FYT_WARN("armor_solver", "EKF innovation statistics diverged, resetting tracker");
+          tracker_state = LOST;
+          ekf.resetInnovationHistory();
+          return;
+        }
+      } else {
+        FYT_WARN("armor_solver", "Rejecting singular spherical armor measurement");
       }
     } else if (has_candidate && yaw_diff > max_match_yaw_diff_) {
-      tracked_armor = matched_armor;
-      handleArmorJump(matched_armor, matched_index, matched_yaw);
       const auto p = matched_armor.pose.position;
-      measurement = Eigen::Vector4d(p.x, p.y, p.z, matched_yaw);
-      matched = true;
+      if (setSphericalMeasurement(p, matched_yaw)) {
+        tracked_armor = matched_armor;
+        handleArmorJump(matched_armor, matched_index, matched_yaw);
+        matched = true;
+      } else {
+        FYT_WARN("armor_solver", "Rejecting singular spherical armor measurement");
+      }
     } else {
       FYT_WARN("armor_solver", "No matched armor found!");
     }
@@ -259,6 +266,18 @@ void Tracker::updateArmorCount(const Armor &armor) noexcept {
   } else {
     tracked_armors_num = ArmorsNum::NORMAL_4;
   }
+}
+
+bool Tracker::setSphericalMeasurement(const geometry_msgs::msg::Point &position,
+                                      double armor_yaw) noexcept {
+  const Eigen::Vector3d cartesian(position.x, position.y, position.z);
+  Eigen::Vector3d spherical;
+  if (!TargetEkfModel::cartesianToSpherical(cartesian, spherical) || !std::isfinite(armor_yaw)) {
+    return false;
+  }
+
+  measurement << spherical, TargetEkfModel::normalizeAngle(armor_yaw);
+  return measurement.allFinite();
 }
 
 bool Tracker::findBestMatch(const Armors::SharedPtr &armors_msg,

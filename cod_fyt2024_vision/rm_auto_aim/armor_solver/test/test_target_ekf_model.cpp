@@ -145,6 +145,20 @@ TEST(TargetEkfModel, SphericalObservationMatchesExpectedValues) {
   EXPECT_NEAR(observation[3], 0.0, 1e-12);
 }
 
+TEST(TargetEkfModel, ConvertsCartesianPositionToSphericalCoordinates) {
+  const Eigen::Vector3d position(1.0, 1.0, std::sqrt(2.0));
+  Eigen::Vector3d spherical;
+  ASSERT_TRUE(TargetEkfModel::cartesianToSpherical(position, spherical));
+  EXPECT_NEAR(spherical[0], M_PI / 4.0, 1e-12);
+  EXPECT_NEAR(spherical[1], M_PI / 4.0, 1e-12);
+  EXPECT_NEAR(spherical[2], 2.0, 1e-12);
+
+  EXPECT_FALSE(TargetEkfModel::cartesianToSpherical(
+    Eigen::Vector3d(0.0, 0.0, 1.0), spherical));
+  EXPECT_FALSE(TargetEkfModel::cartesianToSpherical(
+    Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN()), spherical));
+}
+
 TEST(TargetEkfModel, CartesianObservationMatchesArmorPosition) {
   const auto state = makeState();
   Eigen::Vector3d position;

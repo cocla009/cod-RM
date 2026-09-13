@@ -42,8 +42,8 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   tracker_->tracking_thres = this->declare_parameter("tracker.tracking_thres", 5);
   lost_time_thres_ = this->declare_parameter("tracker.lost_time_thres", 0.3);
 
-  // EKF: keep a Cartesian state and temporarily retain the existing Cartesian
-  // measurement. The spherical measurement is introduced in a later task.
+  // EKF: keep the Cartesian target state while using spherical armor
+  // observations [azimuth, elevation, distance, armor_yaw].
   auto f = [this](const Eigen::VectorXd &x) {
     Eigen::VectorXd predicted;
     if (!TargetEkfModel::propagate(x, dt_, predicted)) {
@@ -56,7 +56,7 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   };
   auto h = [this](const Eigen::VectorXd &x) -> Eigen::VectorXd {
     Eigen::Vector4d observation = Eigen::Vector4d::Zero();
-    if (!TargetEkfModel::cartesianObservation(
+    if (!TargetEkfModel::sphericalObservation(
           x, tracker_->activeArmorIndex(), tracker_->armorCount(), observation)) {
       return Eigen::VectorXd::Zero(4);
     }
@@ -64,7 +64,7 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   };
   auto j_h = [this](const Eigen::VectorXd &x) -> Eigen::MatrixXd {
     Eigen::MatrixXd jacobian;
-    if (!TargetEkfModel::cartesianObservationJacobian(
+    if (!TargetEkfModel::observationJacobian(
           x, tracker_->activeArmorIndex(), tracker_->armorCount(), jacobian)) {
       return Eigen::MatrixXd::Zero(4, TargetEkfModel::kStateSize);
     }
@@ -108,16 +108,17 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
     return q;
   };
   // update_R - measurement noise covariance matrix
-  r_x_ = declare_parameter("ekf.r_x", 0.05);
-  r_y_ = declare_parameter("ekf.r_y", 0.05);
-  r_z_ = declare_parameter("ekf.r_z", 0.05);
-  r_yaw_ = declare_parameter("ekf.r_yaw", 0.02);
+  r_azimuth_ = declare_parameter("ekf.r_azimuth", 0.005);
+  r_elevation_ = declare_parameter("ekf.r_elevation", 0.005);
+  r_distance_ = declare_parameter("ekf.r_distance", 0.02);
+  r_armor_yaw_ = declare_parameter("ekf.r_armor_yaw", 0.02);
   auto u_r = [this](const Eigen::VectorXd &z) {
     Eigen::DiagonalMatrix<double, 4> r;
-    r.diagonal() << std::max(1e-6, abs(r_x_ * z[0])),
-      std::max(1e-6, abs(r_y_ * z[1])),
-      std::max(1e-6, abs(r_z_ * z[2])),
-      std::max(1e-6, r_yaw_);
+    (void)z;
+    r.diagonal() << std::max(1e-8, r_azimuth_),
+      std::max(1e-8, r_elevation_),
+      std::max(1e-8, r_distance_),
+      std::max(1e-8, r_armor_yaw_);
     return r;
   };
   // P - error estimate covariance matrix
@@ -125,6 +126,7 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   p0.setIdentity();
   auto subtract_measurement = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
     Eigen::VectorXd residual = a - b;
+    residual(0) = TargetEkfModel::normalizeAngle(residual(0));
     residual(3) = TargetEkfModel::normalizeAngle(residual(3));
     return residual;
   };

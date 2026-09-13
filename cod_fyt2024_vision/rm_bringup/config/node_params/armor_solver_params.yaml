@@ -13,10 +13,10 @@
       sigma2_q_delta_r: 5.0
       sigma2_q_dz: 5.0
 
-      r_x: 0.0432
-      r_y: 0.0416
-      r_z: 0.1506
-      r_yaw: 0.0155
+      r_azimuth: 0.005
+      r_elevation: 0.005
+      r_distance: 0.02
+      r_armor_yaw: 0.02
 
     tracker:
       max_match_distance: 0.5

@@ -7,7 +7,7 @@
 ### 发布话题 
 
 * `armor_solver/target` (`rm_interfaces/msg/Target`) - 整车估计的状态
-* `armor_solver/measurement` (`rm_interfaces/msg/Measurement`) - EKF的输入观测量
+* `armor_solver/measurement` (`rm_interfaces/msg/Measurement`) - EKF的球面输入观测量，字段依次为方位角、俯仰角、距离和装甲板 yaw
 * `armor_solver/cmd_gimbal` (`rm_interfaces/msg/GimbalCmd`) - 云台控制指令
 
 ### 订阅话题
@@ -20,7 +20,7 @@
 * `debug` (`bool`, default: false) - 是否开启调试模式
 * `target_frame` (`string`, default: "odom") - 目标坐标系
 * `ekf.sigma2_q_x/y/z/yaw/r` - 分别控制平面、竖直、偏航和半径状态的过程噪声
-* `ekf.r_x/y/z/r_yaw` - 观测噪声参数，按观测距离调整位置观测噪声
+* `ekf.r_azimuth/r_elevation/r_distance/r_armor_yaw` - 球面观测协方差参数，依次对应方位角、俯仰角、距离和装甲板 yaw
 * `tracker.max_match_distance` (`double`, default: 0.5) - 两帧间目标可匹配的最大距离
 * `tracker.max_match_yaw_diff` (`double`, default: 0.5) - 两帧间目标同一块装甲板可匹配的最大yaw角差（大于这个值则认为装甲板发生跳变）
 * `tracker.tracking_thres` (`int`, default: 2) - `DETECTING` 状态进入 `TRACKING` 状态需要连续识别到的帧数

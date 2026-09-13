@@ -151,16 +151,32 @@ bool TargetEkfModel::sphericalObservation(const Eigen::VectorXd &state,
     return false;
   }
 
+  Eigen::Vector3d spherical;
+  if (!cartesianToSpherical(position, spherical)) {
+    return false;
+  }
+
+  observation << spherical,
+    normalizeAngle(state(YAW) + armor_index * kTwoPi / armor_count);
+  return observation.allFinite();
+}
+
+bool TargetEkfModel::cartesianToSpherical(const Eigen::Vector3d &position,
+                                          Eigen::Vector3d &spherical) noexcept {
+  spherical.setZero();
+  if (!position.allFinite()) {
+    return false;
+  }
+
   const double horizontal_distance = std::hypot(position.x(), position.y());
   const double distance = position.norm();
   if (horizontal_distance < kMinHorizontalDistance || distance < kMinDistance) {
     return false;
   }
 
-  observation << std::atan2(position.y(), position.x()),
-    std::atan2(position.z(), horizontal_distance), distance,
-    normalizeAngle(state(YAW) + armor_index * kTwoPi / armor_count);
-  return observation.allFinite();
+  spherical << std::atan2(position.y(), position.x()),
+    std::atan2(position.z(), horizontal_distance), distance;
+  return spherical.allFinite();
 }
 
 bool TargetEkfModel::sphericalPositionJacobian(const Eigen::Vector3d &position,

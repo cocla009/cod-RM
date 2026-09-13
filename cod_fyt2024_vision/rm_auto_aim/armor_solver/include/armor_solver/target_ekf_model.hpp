@@ -70,6 +70,10 @@ public:
                                    int armor_count,
                                    Eigen::Vector4d &observation) noexcept;
 
+  // Convert Cartesian position [x, y, z] to [azimuth, elevation, distance].
+  static bool cartesianToSpherical(const Eigen::Vector3d &position,
+                                   Eigen::Vector3d &spherical) noexcept;
+
   // Jacobian of spherical coordinates [azimuth, elevation, distance] with
   // respect to Cartesian coordinates [x, y, z].
   static bool sphericalPositionJacobian(const Eigen::Vector3d &position,

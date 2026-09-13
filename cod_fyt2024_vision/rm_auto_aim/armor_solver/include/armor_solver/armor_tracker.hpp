@@ -94,6 +94,9 @@ private:
 
   void updateArmorCount(const Armor &armor) noexcept;
 
+  bool setSphericalMeasurement(const geometry_msgs::msg::Point &position,
+                               double armor_yaw) noexcept;
+
   static Eigen::Vector3d getArmorPositionFromState(const Eigen::VectorXd &x,
                                                    int armor_index,
                                                    int armor_count) noexcept;
