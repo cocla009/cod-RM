@@ -28,6 +28,7 @@
       controller_delay: 0.025
       max_tracking_v_yaw: 4.5 # 近距离高速旋转时进入中心跟踪
       center_tracking_distance: 1.5
+      min_switching_v_yaw: 1.0 # 低速最近板锁定与高速方向选板的切换阈值
       coming_angle: 55.0
       leaving_angle: 20.0
       yaw_offset: 0.0

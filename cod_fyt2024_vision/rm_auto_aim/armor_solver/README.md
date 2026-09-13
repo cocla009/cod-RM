@@ -29,6 +29,7 @@
 * `solver.controller_delay` (`double`) - 控制执行延迟时间（s）
 * `solver.max_tracking_v_yaw` (`double`) - 近距离高速旋转时进入中心跟踪的角速度阈值
 * `solver.center_tracking_distance` (`double`) - 中心跟踪的距离阈值（m）
+* `solver.min_switching_v_yaw` (`double`, default: 1.0) - 低速最近板锁定与高速方向选板的切换阈值（rad/s）
 * `solver.coming_angle` / `solver.leaving_angle` (`double`) - 高速旋转时的非对称选板窗口（度）
 * `solver.yaw_offset` / `solver.pitch_offset` (`double`, default: 0.0) - 机械零位和安装误差补偿（度）
 * `solver.high_yaw_pitch_compensation_threshold` (`double`, default: 6.0) - 启用高速 pitch 下压补偿的角速度阈值（rad/s）
