@@ -111,6 +111,36 @@ bool TargetEkfModel::armorPositionJacobian(const Eigen::VectorXd &state,
   return jacobian.allFinite();
 }
 
+bool TargetEkfModel::cartesianObservation(const Eigen::VectorXd &state,
+                                          int armor_index,
+                                          int armor_count,
+                                          Eigen::Vector4d &observation) noexcept {
+  observation.setZero();
+  Eigen::Vector3d position;
+  if (!armorPosition(state, armor_index, armor_count, position)) {
+    return false;
+  }
+
+  observation << position,
+    normalizeAngle(state(YAW) + armor_index * kTwoPi / armor_count);
+  return observation.allFinite();
+}
+
+bool TargetEkfModel::cartesianObservationJacobian(const Eigen::VectorXd &state,
+                                                  int armor_index,
+                                                  int armor_count,
+                                                  Eigen::MatrixXd &jacobian) noexcept {
+  jacobian = Eigen::MatrixXd::Zero(4, kStateSize);
+  Eigen::MatrixXd position_jacobian;
+  if (!armorPositionJacobian(state, armor_index, armor_count, position_jacobian)) {
+    return false;
+  }
+
+  jacobian.topRows(3) = position_jacobian;
+  jacobian(3, YAW) = 1.0;
+  return jacobian.allFinite();
+}
+
 bool TargetEkfModel::sphericalObservation(const Eigen::VectorXd &state,
                                           int armor_index,
                                           int armor_count,

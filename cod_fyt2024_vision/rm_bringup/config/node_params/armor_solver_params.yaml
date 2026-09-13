@@ -10,6 +10,8 @@
       sigma2_q_z: 1.0
       sigma2_q_yaw: 30.0
       sigma2_q_r: 100.0
+      sigma2_q_delta_r: 5.0
+      sigma2_q_dz: 5.0
 
       r_x: 0.0432
       r_y: 0.0416

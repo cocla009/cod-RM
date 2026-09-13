@@ -53,6 +53,17 @@ public:
                                     int armor_count,
                                     Eigen::MatrixXd &jacobian) noexcept;
 
+  // Cartesian observation: armor xyz position and armor yaw.
+  static bool cartesianObservation(const Eigen::VectorXd &state,
+                                   int armor_index,
+                                   int armor_count,
+                                   Eigen::Vector4d &observation) noexcept;
+
+  static bool cartesianObservationJacobian(const Eigen::VectorXd &state,
+                                           int armor_index,
+                                           int armor_count,
+                                           Eigen::MatrixXd &jacobian) noexcept;
+
   // Spherical observation: azimuth, elevation, 3-D distance, armor yaw.
   static bool sphericalObservation(const Eigen::VectorXd &state,
                                    int armor_index,

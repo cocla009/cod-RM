@@ -33,6 +33,8 @@ public:
   ExtendedKalmanFilter() = default;
 
   using VecVecFunc = std::function<Eigen::VectorXd(const Eigen::VectorXd &)>;
+  using VecVecSubtractFunc =
+    std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)>;
   using VecMatFunc = std::function<Eigen::MatrixXd(const Eigen::VectorXd &)>;
   using VoidMatFunc = std::function<Eigen::MatrixXd()>;
 
@@ -42,7 +44,11 @@ public:
                                 const VecMatFunc &j_h,
                                 const VoidMatFunc &u_q,
                                 const VecMatFunc &u_r,
-                                const Eigen::MatrixXd &P0);
+                                const Eigen::MatrixXd &P0,
+                                const VecVecSubtractFunc &subtract_measurement =
+                                  [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
+                                    return a - b;
+                                  });
 
   // Set the initial state
   void setState(const Eigen::VectorXd &x0) noexcept;
@@ -79,6 +85,9 @@ private:
   // Measurement noise covariance matrix
   VecMatFunc update_R;
   Eigen::MatrixXd R;
+
+  // Residual function used by nonlinear measurements with wrapped angles.
+  VecVecSubtractFunc subtract_measurement;
 
   // Priori error estimate covariance matrix
   Eigen::MatrixXd P_pri;

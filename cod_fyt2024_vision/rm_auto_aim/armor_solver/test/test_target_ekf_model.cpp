@@ -94,6 +94,28 @@ TEST(TargetEkfModel, ComputesFourArmorGeometry) {
   }
 }
 
+TEST(TargetEkfModel, ComputesTwoAndThreeArmorGeometryWithoutFourArmorOffsets) {
+  auto state = makeState();
+  state(XC) = 1.0;
+  state(YC) = 2.0;
+  state(Z) = 0.5;
+  state(YAW) = 0.0;
+  state(R1) = 0.2;
+  state(DELTA_R) = 0.07;
+  state(DZ) = 0.15;
+
+  for (const int armor_count : {2, 3}) {
+    for (int armor_index = 0; armor_index < armor_count; ++armor_index) {
+      Eigen::Vector3d position;
+      ASSERT_TRUE(TargetEkfModel::armorPosition(state, armor_index, armor_count, position));
+      const double angle = armor_index * 2.0 * M_PI / armor_count;
+      EXPECT_NEAR(position.x(), state(XC) - state(R1) * std::cos(angle), 1e-12);
+      EXPECT_NEAR(position.y(), state(YC) - state(R1) * std::sin(angle), 1e-12);
+      EXPECT_NEAR(position.z(), state(Z), 1e-12);
+    }
+  }
+}
+
 TEST(TargetEkfModel, RejectsInvalidArmorIndexAndSingularObservation) {
   auto state = makeState();
   Eigen::Vector3d position;
@@ -121,6 +143,28 @@ TEST(TargetEkfModel, SphericalObservationMatchesExpectedValues) {
   EXPECT_NEAR(observation[1], 0.0, 1e-12);
   EXPECT_NEAR(observation[2], 1.0, 1e-12);
   EXPECT_NEAR(observation[3], 0.0, 1e-12);
+}
+
+TEST(TargetEkfModel, CartesianObservationMatchesArmorPosition) {
+  const auto state = makeState();
+  Eigen::Vector3d position;
+  Eigen::Vector4d observation;
+  ASSERT_TRUE(TargetEkfModel::armorPosition(state, 1, 4, position));
+  ASSERT_TRUE(TargetEkfModel::cartesianObservation(state, 1, 4, observation));
+  EXPECT_NEAR((observation.head<3>() - position).norm(), 0.0, 1e-12);
+  EXPECT_NEAR(observation[3], TargetEkfModel::normalizeAngle(state(YAW) + M_PI / 2.0), 1e-12);
+}
+
+TEST(TargetEkfModel, CartesianObservationJacobianMatchesPositionJacobian) {
+  const auto state = makeState();
+  Eigen::MatrixXd position_jacobian;
+  Eigen::MatrixXd observation_jacobian;
+  ASSERT_TRUE(TargetEkfModel::armorPositionJacobian(state, 1, 4, position_jacobian));
+  ASSERT_TRUE(
+    TargetEkfModel::cartesianObservationJacobian(state, 1, 4, observation_jacobian));
+  EXPECT_NEAR(
+    (observation_jacobian.topRows(3) - position_jacobian).norm(), 0.0, 1e-12);
+  EXPECT_DOUBLE_EQ(observation_jacobian(3, YAW), 1.0);
 }
 
 TEST(TargetEkfModel, PositionJacobianMatchesFiniteDifference) {

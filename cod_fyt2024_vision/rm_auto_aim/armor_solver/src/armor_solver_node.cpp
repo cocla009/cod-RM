@@ -42,85 +42,69 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   tracker_->tracking_thres = this->declare_parameter("tracker.tracking_thres", 5);
   lost_time_thres_ = this->declare_parameter("tracker.lost_time_thres", 0.3);
 
-  // EKF
-  // xa = x_armor, xc = x_robot_center
-  // state: xc, v_xc, yc, v_yc, za, v_za, yaw, v_yaw, r
-  // measurement: xa, ya, za, yaw
-  // f - Process function
+  // EKF: keep a Cartesian state and temporarily retain the existing Cartesian
+  // measurement. The spherical measurement is introduced in a later task.
   auto f = [this](const Eigen::VectorXd &x) {
-    Eigen::VectorXd x_new = x;
-    x_new(0) += x(1) * dt_;
-    x_new(2) += x(3) * dt_;
-    x_new(4) += x(5) * dt_;
-    x_new(6) += x(7) * dt_;
-    return x_new;
+    Eigen::VectorXd predicted;
+    if (!TargetEkfModel::propagate(x, dt_, predicted)) {
+      return x;
+    }
+    return predicted;
   };
-  // J_f - Jacobian of process function
   auto j_f = [this](const Eigen::VectorXd &) {
-    Eigen::MatrixXd f(9, 9);
-    // clang-format off
-    f <<  1,   dt_, 0,   0,   0,   0,   0,   0,   0,
-          0,   1,   0,   0,   0,   0,   0,   0,   0,
-          0,   0,   1,   dt_, 0,   0,   0,   0,   0, 
-          0,   0,   0,   1,   0,   0,   0,   0,   0,
-          0,   0,   0,   0,   1,   dt_, 0,   0,   0,
-          0,   0,   0,   0,   0,   1,   0,   0,   0,
-          0,   0,   0,   0,   0,   0,   1,   dt_, 0,
-          0,   0,   0,   0,   0,   0,   0,   1,   0,
-          0,   0,   0,   0,   0,   0,   0,   0,   1;
-    // clang-format on
-    return f;
+    return TargetEkfModel::transitionJacobian(dt_);
   };
-  // h - Observation function
-  auto h = [](const Eigen::VectorXd &x) {
-    Eigen::VectorXd z(4);
-    double xc = x(0), yc = x(2), yaw = x(6), r = x(8);
-    z(0) = xc - r * cos(yaw);  // xa
-    z(1) = yc - r * sin(yaw);  // ya
-    z(2) = x(4);               // za
-    z(3) = x(6);               // yaw
-    return z;
+  auto h = [this](const Eigen::VectorXd &x) {
+    Eigen::Vector4d observation = Eigen::Vector4d::Zero();
+    if (!TargetEkfModel::cartesianObservation(
+          x, tracker_->activeArmorIndex(), tracker_->armorCount(), observation)) {
+      return Eigen::VectorXd::Zero(4);
+    }
+    return Eigen::VectorXd(observation);
   };
-  // J_h - Jacobian of observation function
-  auto j_h = [](const Eigen::VectorXd &x) {
-    Eigen::MatrixXd h(4, 9);
-    double yaw = x(6), r = x(8);
-    // clang-format off
-    //    xc   v_xc yc   v_yc za   v_za yaw            v_yaw  r
-    h <<  1,   0,   0,   0,   0,   0,   r*sin(yaw),  0,   -cos(yaw),
-          0,   0,   1,   0,   0,   0,   -r*cos(yaw), 0,   -sin(yaw),
-          0,   0,   0,   0,   1,   0,   0,              0,   0,
-          0,   0,   0,   0,   0,   0,   1,              0,   0;
-    // clang-format on
-    return h;
+  auto j_h = [this](const Eigen::VectorXd &x) {
+    Eigen::MatrixXd jacobian;
+    if (!TargetEkfModel::cartesianObservationJacobian(
+          x, tracker_->activeArmorIndex(), tracker_->armorCount(), jacobian)) {
+      return Eigen::MatrixXd::Zero(4, TargetEkfModel::kStateSize);
+    }
+    return jacobian;
   };
+
   // update_Q - process noise covariance matrix
   s2qx_ = declare_parameter("ekf.sigma2_q_x", 20.0);
   s2qy_ = declare_parameter("ekf.sigma2_q_y", 20.0);
   s2qz_ = declare_parameter("ekf.sigma2_q_z", 20.0);
   s2qyaw_ = declare_parameter("ekf.sigma2_q_yaw", 100.0);
   s2qr_ = declare_parameter("ekf.sigma2_q_r", 800.0);
+  s2qdelta_r_ = declare_parameter("ekf.sigma2_q_delta_r", 10.0);
+  s2qdz_ = declare_parameter("ekf.sigma2_q_dz", 10.0);
   auto u_q = [this]() {
-    Eigen::MatrixXd q(9, 9);
+    Eigen::MatrixXd q = Eigen::MatrixXd::Zero(TargetEkfModel::kStateSize,
+                                               TargetEkfModel::kStateSize);
     double t = dt_, x = s2qx_, y = s2qy_, z = s2qz_, yaw = s2qyaw_, r = s2qr_;
     double q_x_x = pow(t, 4) / 4 * x, q_x_vx = pow(t, 3) / 2 * x, q_vx_vx = pow(t, 2) * x;
     double q_y_y = pow(t, 4) / 4 * y, q_y_vy = pow(t, 3) / 2 * y, q_vy_vy = pow(t, 2) * y;
     double q_z_z = pow(t, 4) / 4 * z, q_z_vz = pow(t, 3) / 2 * z, q_vz_vz = pow(t, 2) * z;
     double q_yaw_yaw = pow(t, 4) / 4 * yaw, q_yaw_vyaw = pow(t, 3) / 2 * yaw,
            q_vyaw_vyaw = pow(t, 2) * yaw;
-    double q_r = pow(t, 4) / 4 * r;
-    // clang-format off
-    //    xc      v_xc    yc      v_yc    za      v_za    yaw         v_yaw       r
-    q <<  q_x_x,  q_x_vx, 0,      0,      0,      0,      0,          0,          0,
-          q_x_vx, q_vx_vx,0,      0,      0,      0,      0,          0,          0,
-          0,      0,      q_y_y,  q_y_vy, 0,      0,      0,          0,          0,
-          0,      0,      q_y_vy, q_vy_vy,0,      0,      0,          0,          0,
-          0,      0,      0,      0,      q_z_z,  q_z_vz, 0,          0,          0,
-          0,      0,      0,      0,      q_z_vz, q_vz_vz,0,          0,          0,
-          0,      0,      0,      0,      0,      0,      q_yaw_yaw,  q_yaw_vyaw, 0,
-          0,      0,      0,      0,      0,      0,      q_yaw_vyaw, q_vyaw_vyaw,0,
-          0,      0,      0,      0,      0,      0,      0,          0,          q_r;
-    // clang-format on
+    q(XC, XC) = q_x_x;
+    q(XC, VXC) = q(VXC, XC) = q_x_vx;
+    q(VXC, VXC) = q_vx_vx;
+    q(YC, YC) = q_y_y;
+    q(YC, VYC) = q(VYC, YC) = q_y_vy;
+    q(VYC, VYC) = q_vy_vy;
+    q(Z, Z) = q_z_z;
+    q(Z, VZ) = q(VZ, Z) = q_z_vz;
+    q(VZ, VZ) = q_vz_vz;
+    q(YAW, YAW) = q_yaw_yaw;
+    q(YAW, VYAW) = q(VYAW, YAW) = q_yaw_vyaw;
+    q(VYAW, VYAW) = q_vyaw_vyaw;
+    // Geometric parameters are modeled as random walks, not integrated
+    // accelerations, so their variance grows with dt^2.
+    q(R1, R1) = t * t * r;
+    q(DELTA_R, DELTA_R) = t * t * s2qdelta_r_;
+    q(DZ, DZ) = t * t * s2qdz_;
     return q;
   };
   // update_R - measurement noise covariance matrix
@@ -137,9 +121,14 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
     return r;
   };
   // P - error estimate covariance matrix
-  Eigen::DiagonalMatrix<double, 9> p0;
+  Eigen::DiagonalMatrix<double, TargetEkfModel::kStateSize> p0;
   p0.setIdentity();
-  tracker_->ekf = ExtendedKalmanFilter{f, h, j_f, j_h, u_q, u_r, p0};
+  auto subtract_measurement = [](const Eigen::VectorXd &a, const Eigen::VectorXd &b) {
+    Eigen::VectorXd residual = a - b;
+    residual(3) = TargetEkfModel::normalizeAngle(residual(3));
+    return residual;
+  };
+  tracker_->ekf = ExtendedKalmanFilter{f, h, j_f, j_h, u_q, u_r, p0, subtract_measurement};
 
   // Subscriber with tf2 message_filter
   // tf2 relevant
@@ -282,16 +271,16 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
       // Fill target message
       const auto &state = tracker_->target_state;
       target_msg.id = tracker_->tracked_id;
-      target_msg.armors_num = static_cast<int>(tracker_->tracked_armors_num);
-      target_msg.position.x = state(0);
-      target_msg.velocity.x = state(1);
-      target_msg.position.y = state(2);
-      target_msg.velocity.y = state(3);
-      target_msg.position.z = state(4);
-      target_msg.velocity.z = state(5);
-      target_msg.yaw = state(6);
-      target_msg.v_yaw = state(7);
-      target_msg.radius_1 = state(8);
+      target_msg.armors_num = tracker_->armorCount();
+      target_msg.position.x = state(XC);
+      target_msg.velocity.x = state(VXC);
+      target_msg.position.y = state(YC);
+      target_msg.velocity.y = state(VYC);
+      target_msg.position.z = state(Z);
+      target_msg.velocity.z = state(VZ);
+      target_msg.yaw = state(YAW);
+      target_msg.v_yaw = state(VYAW);
+      target_msg.radius_1 = state(R1);
       target_msg.radius_2 = tracker_->another_r;
       target_msg.dz = tracker_->dz;
     }

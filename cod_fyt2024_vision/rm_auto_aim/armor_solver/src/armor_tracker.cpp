@@ -19,6 +19,7 @@
 #include "armor_solver/armor_tracker.hpp"
 // std
 #include <cfloat>
+#include <limits>
 #include <memory>
 #include <string>
 // ros2
@@ -27,8 +28,6 @@
 #include <tf2/convert.h>
 
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-// third party
-#include <angles/angles.h>
 // project
 #include "rm_utils/logger/log.hpp"
 
@@ -36,13 +35,18 @@ namespace fyt::auto_aim {
 Tracker::Tracker(double max_match_distance, double max_match_yaw_diff)
 : tracker_state(LOST)
 , tracked_id(std::string(""))
+, tracked_armors_num(ArmorsNum::NORMAL_4)
 , measurement(Eigen::VectorXd::Zero(4))
-, target_state(Eigen::VectorXd::Zero(9))
+, target_state(Eigen::VectorXd::Zero(TargetEkfModel::kStateSize))
+, info_position_diff(std::numeric_limits<double>::infinity())
+, info_yaw_diff(std::numeric_limits<double>::infinity())
+, dz(0.0)
+, another_r(0.0)
 , max_match_distance_(max_match_distance)
 , max_match_yaw_diff_(max_match_yaw_diff)
 , detect_count_(0)
 , lost_count_(0)
-, last_yaw_(0.0) {}
+, active_armor_index_(0) {}
 
 void Tracker::init(const Armors::SharedPtr &armors_msg) noexcept {
   if (armors_msg->armors.empty()) {
@@ -59,23 +63,16 @@ void Tracker::init(const Armors::SharedPtr &armors_msg) noexcept {
     }
   }
 
+  tracked_id = tracked_armor.number;
+  updateArmorCount(tracked_armor);
+  active_armor_index_ = 0;
   initEKF(tracked_armor);
   detect_count_ = 0;
   lost_count_ = 0;
   ekf.resetInnovationHistory();
   FYT_INFO("armor_solver", "Init EKF!");
 
-  tracked_id = tracked_armor.number;
   tracker_state = DETECTING;
-
-  if (tracked_armor.type == "large" &&
-      (tracked_id == "3" || tracked_id == "4" || tracked_id == "5")) {
-    tracked_armors_num = ArmorsNum::BALANCE_2;
-  } else if (tracked_id == "outpost") {
-    tracked_armors_num = ArmorsNum::OUTPOST_3;
-  } else {
-    tracked_armors_num = ArmorsNum::NORMAL_4;
-  }
 }
 
 void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
@@ -87,51 +84,24 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
   target_state = ekf_prediction;
 
   if (!armors_msg->armors.empty()) {
-    // Find the closest armor with the same id
-    int same_id_armors_count = 0;
-    auto predicted_position = getArmorPositionFromState(ekf_prediction);
-    double min_position_diff = DBL_MAX;
-    double yaw_diff = DBL_MAX;
-    for (const auto &armor : armors_msg->armors) {
-      // Only consider armors with the same id
-      if (armor.number == tracked_id) {
-        same_id_armors_count++;
-        // Calculate the difference between the predicted position and the
-        // current armor position
-        auto p = armor.pose.position;
-        Eigen::Vector3d position_vec(p.x, p.y, p.z);
-        double position_diff = (predicted_position - position_vec).norm();
-        if (position_diff < min_position_diff) {
-          // Find the closest armor
-          min_position_diff = position_diff;
-          yaw_diff = abs(orientationToYaw(armor.pose.orientation) - ekf_prediction(6));
-          tracked_armor = armor;
-          // Update tracked armor type
-          if (tracked_armor.type == "large" &&
-              (tracked_id == "3" || tracked_id == "4" || tracked_id == "5")) {
-            tracked_armors_num = ArmorsNum::BALANCE_2;
-          } else if (tracked_id == "outpost") {
-            tracked_armors_num = ArmorsNum::OUTPOST_3;
-          } else {
-            tracked_armors_num = ArmorsNum::NORMAL_4;
-          }
-        }
-      }
-    }
+    Armor matched_armor;
+    int matched_index = 0;
+    double matched_yaw = 0.0;
+    double min_position_diff = std::numeric_limits<double>::infinity();
+    double yaw_diff = std::numeric_limits<double>::infinity();
+    const bool has_candidate = findBestMatch(
+      armors_msg, matched_armor, matched_index, matched_yaw, min_position_diff, yaw_diff);
 
-    // Store tracker info
     info_position_diff = min_position_diff;
     info_yaw_diff = yaw_diff;
 
-    // Check if the distance and yaw difference of closest armor are within the
-    // threshold
-    if (min_position_diff < max_match_distance_ && yaw_diff < max_match_yaw_diff_) {
-      // Matched armor found
+    if (has_candidate && min_position_diff < max_match_distance_ &&
+        yaw_diff < max_match_yaw_diff_) {
       matched = true;
+      tracked_armor = matched_armor;
+      active_armor_index_ = matched_index;
       auto p = tracked_armor.pose.position;
-      // Update EKF
-      double measured_yaw = orientationToYaw(tracked_armor.pose.orientation);
-      measurement = Eigen::Vector4d(p.x, p.y, p.z, measured_yaw);
+      measurement = Eigen::Vector4d(p.x, p.y, p.z, matched_yaw);
       target_state = ekf.update(measurement);
       if (ekf.isDiverged()) {
         FYT_WARN("armor_solver", "EKF innovation statistics diverged, resetting tracker");
@@ -139,25 +109,45 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
         ekf.resetInnovationHistory();
         return;
       }
-    } else if (same_id_armors_count > 0 && yaw_diff > max_match_yaw_diff_) {
-      // A same-ID armor exists but its yaw changed abruptly. Treat the closest
-      // candidate as a possible rotating-target plate switch.
-      handleArmorJump(tracked_armor);
+    } else if (has_candidate && yaw_diff > max_match_yaw_diff_) {
+      tracked_armor = matched_armor;
+      handleArmorJump(matched_armor, matched_index, matched_yaw);
+      const auto p = matched_armor.pose.position;
+      measurement = Eigen::Vector4d(p.x, p.y, p.z, matched_yaw);
       matched = true;
     } else {
-      // No matched armor found
       FYT_WARN("armor_solver", "No matched armor found!");
     }
   }
 
-  // Prevent radius from spreading
-  if (target_state(8) < 0.12) {
-    target_state(8) = 0.12;
-    ekf.setState(target_state);
-  } else if (target_state(8) > 0.27) {
-    target_state(8) = 0.27;
+  // Keep the geometric parameters within physical bounds.
+  bool state_clamped = false;
+  if (target_state(R1) < 0.12) {
+    target_state(R1) = 0.12;
+    state_clamped = true;
+  } else if (target_state(R1) > 0.27) {
+    target_state(R1) = 0.27;
+    state_clamped = true;
+  }
+  if (target_state(DELTA_R) < -0.08) {
+    target_state(DELTA_R) = -0.08;
+    state_clamped = true;
+  } else if (target_state(DELTA_R) > 0.08) {
+    target_state(DELTA_R) = 0.08;
+    state_clamped = true;
+  }
+  if (target_state(DZ) < -0.20) {
+    target_state(DZ) = -0.20;
+    state_clamped = true;
+  } else if (target_state(DZ) > 0.20) {
+    target_state(DZ) = 0.20;
+    state_clamped = true;
+  }
+  if (state_clamped) {
     ekf.setState(target_state);
   }
+  another_r = target_state(R1) + target_state(DELTA_R);
+  dz = target_state(DZ);
 
   // Tracking state machine
   if (tracker_state == DETECTING) {
@@ -199,56 +189,42 @@ void Tracker::initEKF(const Armor &a) noexcept {
   double xa = a.pose.position.x;
   double ya = a.pose.position.y;
   double za = a.pose.position.z;
-  last_yaw_ = 0;
   double yaw = orientationToYaw(a.pose.orientation);
 
-  // Set initial position at 0.2m behind the target
-  target_state = Eigen::VectorXd::Zero(9);
+  target_state = Eigen::VectorXd::Zero(TargetEkfModel::kStateSize);
   double r = 0.26;
   double xc = xa + r * cos(yaw);
   double yc = ya + r * sin(yaw);
   dz = 0, another_r = r;
-  target_state << xc, 0, yc, 0, za, 0, yaw, 0, r;
+  target_state << xc, 0, yc, 0, za, 0, yaw, 0, r, 0, 0;
 
   ekf.resetState(target_state);
 }
 
-void Tracker::handleArmorJump(const Armor &current_armor) noexcept {
-  double last_yaw = target_state(6);
-  double yaw = orientationToYaw(current_armor.pose.orientation);
-
-  if (abs(yaw - last_yaw) > 0.2) {
-    // Armor angle also jumped, take this case as target spinning
-    target_state(6) = yaw;
-    // Only 4 armors has 2 radius and height
-    if (tracked_armors_num == ArmorsNum::NORMAL_4) {
-      dz = target_state(4) - current_armor.pose.position.z;
-      target_state(4) = current_armor.pose.position.z;
-      std::swap(target_state(8), another_r);
-      target_state(5) = 0;
-    }
-    FYT_DEBUG("armor_solver", "Armor Jump!");
+void Tracker::handleArmorJump(const Armor &current_armor,
+                              int armor_index,
+                              double armor_yaw) noexcept {
+  const int count = armorCount();
+  if (count < 2 || armor_index < 0 || armor_index >= count) {
+    return;
   }
-
+  const bool long_armor = count == 4 && armor_index % 2 == 1;
+  const double radius = target_state(R1) + (long_armor ? target_state(DELTA_R) : 0.0);
+  const double height = long_armor ? target_state(DZ) : 0.0;
+  const double base_yaw = TargetEkfModel::normalizeAngle(
+    armor_yaw - armor_index * 2.0 * M_PI / static_cast<double>(count));
   auto p = current_armor.pose.position;
-  Eigen::Vector3d current_p(p.x, p.y, p.z);
-  Eigen::Vector3d infer_p = getArmorPositionFromState(target_state);
-
-  if ((current_p - infer_p).norm() > max_match_distance_) {
-    // If the distance between the current armor and the inferred armor is too
-    // large, the state is wrong, reset center position and velocity in the
-    // state
-    double r = target_state(8);
-    target_state(0) = p.x + r * cos(yaw);  // xc
-    target_state(1) = 0;                   // vxc
-    target_state(2) = p.y + r * sin(yaw);  // yc
-    target_state(3) = 0;                   // vyc
-    target_state(4) = p.z;                 // xz
-    target_state(5) = 0;                   // vza
-    FYT_WARN("armor_solver", "State wrong!");
-  }
-
+  target_state(XC) = p.x + radius * std::cos(armor_yaw);
+  target_state(VXC) = 0;
+  target_state(YC) = p.y + radius * std::sin(armor_yaw);
+  target_state(VYC) = 0;
+  target_state(Z) = p.z - height;
+  target_state(VZ) = 0;
+  target_state(YAW) = base_yaw;
+  target_state(VYAW) = 0;
+  active_armor_index_ = armor_index;
   ekf.setState(target_state);
+  FYT_DEBUG("armor_solver", "Armor jump re-anchored at index {}", armor_index);
 }
 
 double Tracker::orientationToYaw(const geometry_msgs::msg::Quaternion &q) noexcept {
@@ -257,19 +233,78 @@ double Tracker::orientationToYaw(const geometry_msgs::msg::Quaternion &q) noexce
   tf2::fromMsg(q, tf_q);
   double roll, pitch, yaw;
   tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-  // Make yaw change continuous (-pi~pi to -inf~inf)
-  yaw = last_yaw_ + angles::shortest_angular_distance(last_yaw_, yaw);
-  last_yaw_ = yaw;
-  return yaw;
+  return TargetEkfModel::normalizeAngle(yaw);
 }
 
-Eigen::Vector3d Tracker::getArmorPositionFromState(const Eigen::VectorXd &x) noexcept {
-  // Calculate predicted position of the current armor
-  double xc = x(0), yc = x(2), za = x(4);
-  double yaw = x(6), r = x(8);
-  double xa = xc - r * cos(yaw);
-  double ya = yc - r * sin(yaw);
-  return Eigen::Vector3d(xa, ya, za);
+Eigen::Vector3d Tracker::getArmorPositionFromState(const Eigen::VectorXd &x,
+                                                  int armor_index,
+                                                  int armor_count) noexcept {
+  Eigen::Vector3d position = Eigen::Vector3d::Zero();
+  TargetEkfModel::armorPosition(x, armor_index, armor_count, position);
+  return position;
+}
+
+int Tracker::activeArmorIndex() const noexcept { return active_armor_index_; }
+
+int Tracker::armorCount() const noexcept {
+  return static_cast<int>(tracked_armors_num);
+}
+
+void Tracker::updateArmorCount(const Armor &armor) noexcept {
+  if (armor.type == "large" &&
+      (armor.number == "3" || armor.number == "4" || armor.number == "5")) {
+    tracked_armors_num = ArmorsNum::BALANCE_2;
+  } else if (armor.number == "outpost") {
+    tracked_armors_num = ArmorsNum::OUTPOST_3;
+  } else {
+    tracked_armors_num = ArmorsNum::NORMAL_4;
+  }
+}
+
+bool Tracker::findBestMatch(const Armors::SharedPtr &armors_msg,
+                            Armor &matched_armor,
+                            int &matched_index,
+                            double &matched_yaw,
+                            double &position_diff,
+                            double &yaw_diff) noexcept {
+  if (!armors_msg || armors_msg->armors.empty()) {
+    return false;
+  }
+
+  const int count = armorCount();
+  double best_cost = std::numeric_limits<double>::infinity();
+  bool found = false;
+  for (const auto &armor : armors_msg->armors) {
+    if (armor.number != tracked_id) {
+      continue;
+    }
+
+    const auto p = armor.pose.position;
+    const Eigen::Vector3d measured_position(p.x, p.y, p.z);
+    const double measured_yaw = orientationToYaw(armor.pose.orientation);
+    for (int index = 0; index < count; ++index) {
+      const Eigen::Vector3d predicted_position =
+        getArmorPositionFromState(target_state, index, count);
+      const double predicted_yaw = TargetEkfModel::normalizeAngle(
+        target_state(YAW) + index * 2.0 * M_PI / static_cast<double>(count));
+      const double candidate_position_diff = (predicted_position - measured_position).norm();
+      const double candidate_yaw_diff =
+        std::abs(TargetEkfModel::normalizeAngle(measured_yaw - predicted_yaw));
+      const double candidate_cost = candidate_position_diff / std::max(max_match_distance_, 1e-6) +
+                                    candidate_yaw_diff / std::max(max_match_yaw_diff_, 1e-6);
+
+      if (candidate_cost < best_cost) {
+        best_cost = candidate_cost;
+        matched_armor = armor;
+        matched_index = index;
+        matched_yaw = measured_yaw;
+        position_diff = candidate_position_diff;
+        yaw_diff = candidate_yaw_diff;
+        found = true;
+      }
+    }
+  }
+  return found;
 }
 
 }  // namespace fyt::auto_aim

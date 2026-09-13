@@ -29,13 +29,15 @@ ExtendedKalmanFilter::ExtendedKalmanFilter(const VecVecFunc &f,
                                            const VecMatFunc &j_h,
                                            const VoidMatFunc &u_q,
                                            const VecMatFunc &u_r,
-                                           const Eigen::MatrixXd &P0)
+                                           const Eigen::MatrixXd &P0,
+                                           const VecVecSubtractFunc &subtract_measurement)
 : f(f)
 , h(h)
 , jacobian_f(j_f)
 , jacobian_h(j_h)
 , update_Q(u_q)
 , update_R(u_r)
+, subtract_measurement(subtract_measurement)
 , P_post(P0)
 , P0_(P0)
 , n(P0.rows())
@@ -71,7 +73,7 @@ Eigen::MatrixXd ExtendedKalmanFilter::update(const Eigen::VectorXd &z) noexcept 
   H = jacobian_h(x_pri), R = update_R(z);
 
   const Eigen::MatrixXd S = H * P_pri * H.transpose() + R;
-  const Eigen::VectorXd residual = z - h(x_pri);
+  const Eigen::VectorXd residual = subtract_measurement(z, h(x_pri));
   const Eigen::LDLT<Eigen::MatrixXd> decomposition(S);
   if (decomposition.info() != Eigen::Success || !S.allFinite()) {
     nis_failures_.push_back(true);
@@ -107,7 +109,8 @@ bool ExtendedKalmanFilter::isDiverged() const noexcept {
   if (nis_failures_.size() < kNisWindowSize) {
     return false;
   }
-  const auto failures = std::count(nis_failures_.begin(), nis_failures_.end(), true);
+  const auto failures = static_cast<std::size_t>(
+    std::count(nis_failures_.begin(), nis_failures_.end(), true));
   return failures >= static_cast<std::size_t>(0.4 * kNisWindowSize);
 }
 

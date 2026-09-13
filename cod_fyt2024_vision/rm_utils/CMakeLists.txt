@@ -89,6 +89,10 @@ if(BUILD_TESTING)
     ament_cmake_cpplint
   )
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_extended_kalman_filter test/test_extended_kalman_filter.cpp)
+  target_link_libraries(test_extended_kalman_filter ${PROJECT_NAME})
 endif()
 
 ament_package()

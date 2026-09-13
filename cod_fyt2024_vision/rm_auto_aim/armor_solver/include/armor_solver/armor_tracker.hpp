@@ -33,6 +33,7 @@
 #include "rm_interfaces/msg/armors.hpp"
 #include "rm_interfaces/msg/target.hpp"
 #include "rm_utils/math/extended_kalman_filter.hpp"
+#include "armor_solver/target_ekf_model.hpp"
 
 namespace fyt::auto_aim {
 
@@ -73,14 +74,29 @@ public:
   // To store another pair of armors message
   double dz, another_r;
 
+  int activeArmorIndex() const noexcept;
+
+  int armorCount() const noexcept;
+
 private:
   void initEKF(const Armor &a) noexcept;
 
-  void handleArmorJump(const Armor &a) noexcept;
+  void handleArmorJump(const Armor &a, int armor_index, double armor_yaw) noexcept;
 
   double orientationToYaw(const geometry_msgs::msg::Quaternion &q) noexcept;
 
-  static Eigen::Vector3d getArmorPositionFromState(const Eigen::VectorXd &x) noexcept;
+  bool findBestMatch(const Armors::SharedPtr &armors_msg,
+                     Armor &matched_armor,
+                     int &matched_index,
+                     double &matched_yaw,
+                     double &position_diff,
+                     double &yaw_diff) noexcept;
+
+  void updateArmorCount(const Armor &armor) noexcept;
+
+  static Eigen::Vector3d getArmorPositionFromState(const Eigen::VectorXd &x,
+                                                   int armor_index,
+                                                   int armor_count) noexcept;
 
   double max_match_distance_;
   double max_match_yaw_diff_;
@@ -88,7 +104,7 @@ private:
   int detect_count_;
   int lost_count_;
 
-  double last_yaw_;
+  int active_armor_index_;
 };
 
 }  // namespace fyt::auto_aim
