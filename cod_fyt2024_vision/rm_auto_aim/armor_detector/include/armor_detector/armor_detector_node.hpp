@@ -113,8 +113,6 @@ private:
   // Target subscription
   // rclcpp::Subscription<rm_interfaces::msg::Target>::SharedPtr target_sub_;
   // rm_interfaces::msg::Target::SharedPtr tracked_target_;
-  std::deque<Armor> tracked_armors_;
-
   // ReceiveData subscripiton
   std::string odom_frame_;
   Eigen::Matrix3d imu_to_camera_;

@@ -204,22 +204,10 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
         armor.rmat = rotation_matrix.clone();
         armor.tvec = tvec.clone();
 
-        if (use_ba_) {
-          // Optimize armor parallel to the ground only
-          if (std::abs(armor.roll) < 10) {
-            tracked_armors_.push_back(armor);
-          }
-
-          // Initially, We wanted to do multi-frame BA optimization and a
-          // queue was used as input, but later we found that it didn't work well,
-          // so we just fixed the queue size to 1.
-          if (tracked_armors_.size() > 1) {
-            tracked_armors_.pop_front();
-          }
-
-          // Use BA alogorithm to optimize the pose from PnP
-          // solveBa() will modify the rotation_matrix
-          ba_solver_->solveBa(tracked_armors_, rotation_matrix);
+        if (use_ba_ && std::abs(armor.roll) < 10) {
+          // Refine only the current PnP result; never reuse a stale armor from
+          // an earlier frame when the current roll is outside the prior.
+          ba_solver_->solveBa(armor, rotation_matrix);
         }
 
         // Fill basic info
@@ -453,17 +441,6 @@ rcl_interfaces::msg::SetParametersResult ArmorDetectorNode::onSetParameters(
   }
   return result;
 }
-
-// void ArmorDetectorNode::targetCallback(const rm_interfaces::msg::Target::SharedPtr target_msg) {
-//   if (target_msg->tracking) {
-//     tracked_target_ = target_msg;
-//   } else {
-//     tracked_target_ = nullptr;
-//     if (!tracked_armors_.empty()) {
-//       tracked_armors_.clear();
-//     }
-//   }
-// }
 
 void ArmorDetectorNode::createDebugPublishers() noexcept {
   lights_data_pub_ =

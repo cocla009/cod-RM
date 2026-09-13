@@ -20,7 +20,6 @@
 // std
 #include <array>
 #include <cstddef>
-#include <deque>
 #include <vector>
 // 3rd party
 #include <Eigen/Core>
@@ -37,7 +36,7 @@ public:
   BaSolver(const std::array<double, 9> &camera_matrix, const std::vector<double> &dist_coeffs);
 
   // Solve the armor yaw and update the camera-to-armor rotation matrix.
-  bool solveBa(const std::deque<Armor> &armors, cv::Mat &rmat) noexcept;
+  bool solveBa(const Armor &armor, cv::Mat &rmat) noexcept;
 
 private:
   double computeReprojError(const Eigen::Matrix3d &camera2imu,

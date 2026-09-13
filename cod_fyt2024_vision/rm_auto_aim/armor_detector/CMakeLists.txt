@@ -18,7 +18,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 ## Find dependencies ##
 #######################
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/cmake_modules)
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(TBB REQUIRED COMPONENTS tbb)

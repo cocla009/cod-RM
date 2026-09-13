@@ -60,12 +60,11 @@ double BaSolver::computeReprojError(const Eigen::Matrix3d &camera2imu,
   return error;
 }
 
-bool BaSolver::solveBa(const std::deque<Armor> &armors, cv::Mat &rmat) noexcept {
-  if (armors.empty()) {
+bool BaSolver::solveBa(const Armor &armor, cv::Mat &rmat) noexcept {
+  if (armor.tvec.empty() || armor.tvec.total() < 3) {
     return false;
   }
 
-  const Armor &armor = armors.back();
   const auto landmarks = armor.landmarks();
   const Eigen::Matrix3d camera2imu = armor.imu2camera.transpose();
   const Eigen::Vector3d tvec(armor.tvec.at<double>(0),
