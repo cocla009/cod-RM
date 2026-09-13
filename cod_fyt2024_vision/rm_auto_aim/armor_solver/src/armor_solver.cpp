@@ -216,6 +216,11 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
                                       distance,
                                       target.armors_num,
                                       selected_delta_angle);
+  if (state == State::TRACKING_CENTER) {
+    // Center tracking keeps the gimbal motion continuous but does not identify
+    // an actual armor plate that is safe to fire at.
+    gimbal_cmd.fire_advice = false;
+  }
   return gimbal_cmd;
 }
 

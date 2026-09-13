@@ -210,7 +210,7 @@ void Tracker::initEKF(const Armor &a) noexcept {
   dz = 0, another_r = r;
   target_state << xc, 0, yc, 0, za, 0, yaw, 0, r;
 
-  ekf.setState(target_state);
+  ekf.resetState(target_state);
 }
 
 void Tracker::handleArmorJump(const Armor &current_armor) noexcept {

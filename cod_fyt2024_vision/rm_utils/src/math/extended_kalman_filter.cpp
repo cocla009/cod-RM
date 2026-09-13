@@ -37,12 +37,22 @@ ExtendedKalmanFilter::ExtendedKalmanFilter(const VecVecFunc &f,
 , update_Q(u_q)
 , update_R(u_r)
 , P_post(P0)
+, P0_(P0)
 , n(P0.rows())
 , I(Eigen::MatrixXd::Identity(n, n))
 , x_pri(n)
 , x_post(n) {}
 
 void ExtendedKalmanFilter::setState(const Eigen::VectorXd &x0) noexcept { x_post = x0; }
+
+void ExtendedKalmanFilter::resetState(const Eigen::VectorXd &x0) noexcept {
+  x_post = x0;
+  x_pri = x0;
+  P_post = P0_;
+  P_pri = P0_;
+  K = Eigen::MatrixXd::Zero(P0_.rows(), P0_.cols());
+  resetInnovationHistory();
+}
 
 Eigen::MatrixXd ExtendedKalmanFilter::predict() noexcept {
   F = jacobian_f(x_post), Q = update_Q();
@@ -64,6 +74,10 @@ Eigen::MatrixXd ExtendedKalmanFilter::update(const Eigen::VectorXd &z) noexcept 
   const Eigen::VectorXd residual = z - h(x_pri);
   const Eigen::LDLT<Eigen::MatrixXd> decomposition(S);
   if (decomposition.info() != Eigen::Success || !S.allFinite()) {
+    nis_failures_.push_back(true);
+    if (nis_failures_.size() > kNisWindowSize) {
+      nis_failures_.pop_front();
+    }
     x_post = x_pri;
     P_post = P_pri;
     return x_post;

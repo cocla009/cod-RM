@@ -47,6 +47,9 @@ public:
   // Set the initial state
   void setState(const Eigen::VectorXd &x0) noexcept;
 
+  // Reset state, covariance, and innovation history for a new track.
+  void resetState(const Eigen::VectorXd &x0) noexcept;
+
   // Compute a predicted state
   Eigen::MatrixXd predict() noexcept;
 
@@ -81,6 +84,7 @@ private:
   Eigen::MatrixXd P_pri;
   // Posteriori error estimate covariance matrix
   Eigen::MatrixXd P_post;
+  Eigen::MatrixXd P0_;
 
   // Kalman gain
   Eigen::MatrixXd K;

@@ -191,14 +191,14 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
       // Use PnP to get the initial pose information
       if (pnp_solver_->solvePnP(
             armor.landmarks(), rvec, tvec, (armor.type == ArmorType::SMALL ? "small" : "large"))) {
-        armor.roll = rvecToRPY(rvec, 0) * 180 / M_PI;
         armor.imu2camera = imu_to_camera_;
 
-        // Select the best PnP solution according to the pitch angle
-        // Optimize armor parallel to the ground only
-        if (pnp_solution_selection_ && std::abs(armor.roll) < 10) {
+        // Select the best PnP solution before applying the roll gate. IPPE's
+        // first solution is not guaranteed to be the physically valid one.
+        if (pnp_solution_selection_) {
           PnPSolutionsSelection(armor, rvec, tvec);
         }
+        armor.roll = rvecToRPY(rvec, 0) * 180 / M_PI;
 
         cv::Rodrigues(rvec, rotation_matrix);
         armor.rmat = rotation_matrix.clone();

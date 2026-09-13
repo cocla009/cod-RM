@@ -130,7 +130,10 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   r_yaw_ = declare_parameter("ekf.r_yaw", 0.02);
   auto u_r = [this](const Eigen::VectorXd &z) {
     Eigen::DiagonalMatrix<double, 4> r;
-    r.diagonal() << abs(r_x_ * z[0]), abs(r_y_ * z[1]), abs(r_z_ * z[2]), r_yaw_;
+    r.diagonal() << std::max(1e-6, abs(r_x_ * z[0])),
+      std::max(1e-6, abs(r_y_ * z[1])),
+      std::max(1e-6, abs(r_z_ * z[2])),
+      std::max(1e-6, r_yaw_);
     return r;
   };
   // P - error estimate covariance matrix
@@ -305,6 +308,9 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
       control_msg.yaw_diff = 0;
       control_msg.pitch_diff = 0;
       control_msg.distance = -1;
+      control_msg.fire_advice = false;
+    }
+    if (tracker_->tracker_state == Tracker::TEMP_LOST) {
       control_msg.fire_advice = false;
     }
   } else {
