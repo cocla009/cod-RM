@@ -81,6 +81,12 @@ private:
                        double &yaw,
                        double &pitch) const noexcept;
 
+  // Apply mechanical calibration and bounded high-yaw pitch compensation to
+  // the final aim angles before command and fire-control calculations.
+  void applyAimCorrections(const double target_v_yaw,
+                           double &yaw,
+                           double &pitch) const noexcept;
+
   bool isOnTarget(const double cur_yaw,
                   const double cur_pitch,
                   const double target_yaw,
@@ -104,6 +110,11 @@ private:
   double coming_angle_;
   double leaving_angle_;
   double center_tracking_distance_;
+  double yaw_offset_deg_;
+  double pitch_offset_deg_;
+  double high_yaw_compensation_threshold_;
+  double high_yaw_compensation_reference_;
+  double max_high_yaw_pitch_offset_deg_;
   int lock_id_ = -1;
 
   double fire_margin_;

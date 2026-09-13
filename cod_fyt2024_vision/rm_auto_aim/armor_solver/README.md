@@ -30,6 +30,10 @@
 * `solver.max_tracking_v_yaw` (`double`) - 近距离高速旋转时进入中心跟踪的角速度阈值
 * `solver.center_tracking_distance` (`double`) - 中心跟踪的距离阈值（m）
 * `solver.coming_angle` / `solver.leaving_angle` (`double`) - 高速旋转时的非对称选板窗口（度）
+* `solver.yaw_offset` / `solver.pitch_offset` (`double`, default: 0.0) - 机械零位和安装误差补偿（度）
+* `solver.high_yaw_pitch_compensation_threshold` (`double`, default: 6.0) - 启用高速 pitch 下压补偿的角速度阈值（rad/s）
+* `solver.high_yaw_pitch_compensation_reference` (`double`, default: 10.0) - 高速 pitch 补偿达到上限的参考角速度（rad/s）
+* `solver.max_high_yaw_pitch_offset` (`double`, default: 1.2) - 高速 pitch 下压补偿上限（度）
 * `solver.fire_margin`、`solver.min_fire_tolerance`、`solver.max_fire_tolerance` - 动态开火窗口参数
 * `solver.bullet_speed` (`double`) - 子弹速度（m/s）
 * `solver.gravity` (`double`, default: 9.8) - 重力加速度

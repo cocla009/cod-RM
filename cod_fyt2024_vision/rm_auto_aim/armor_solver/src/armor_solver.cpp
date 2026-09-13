@@ -52,6 +52,14 @@ Solver::Solver(std::weak_ptr<rclcpp::Node> n) : node_(n) {
   coming_angle_ = node->declare_parameter("solver.coming_angle", 55.0);
   leaving_angle_ = node->declare_parameter("solver.leaving_angle", 20.0);
   center_tracking_distance_ = node->declare_parameter("solver.center_tracking_distance", 1.5);
+  yaw_offset_deg_ = node->declare_parameter("solver.yaw_offset", 0.0);
+  pitch_offset_deg_ = node->declare_parameter("solver.pitch_offset", 0.0);
+  high_yaw_compensation_threshold_ =
+    node->declare_parameter("solver.high_yaw_pitch_compensation_threshold", 6.0);
+  high_yaw_compensation_reference_ =
+    node->declare_parameter("solver.high_yaw_pitch_compensation_reference", 10.0);
+  max_high_yaw_pitch_offset_deg_ =
+    node->declare_parameter("solver.max_high_yaw_pitch_offset", 1.2);
 
   fire_margin_ = node->declare_parameter("solver.fire_margin", 0.8);
   const double min_tolerance_deg =
@@ -95,6 +103,14 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
       leaving_angle_ = node->get_parameter("solver.leaving_angle").as_double();
       center_tracking_distance_ =
         node->get_parameter("solver.center_tracking_distance").as_double();
+      yaw_offset_deg_ = node->get_parameter("solver.yaw_offset").as_double();
+      pitch_offset_deg_ = node->get_parameter("solver.pitch_offset").as_double();
+      high_yaw_compensation_threshold_ =
+        node->get_parameter("solver.high_yaw_pitch_compensation_threshold").as_double();
+      high_yaw_compensation_reference_ =
+        node->get_parameter("solver.high_yaw_pitch_compensation_reference").as_double();
+      max_high_yaw_pitch_offset_deg_ =
+        node->get_parameter("solver.max_high_yaw_pitch_offset").as_double();
       fire_margin_ = node->get_parameter("solver.fire_margin").as_double();
     }
   } catch (const std::runtime_error &e) {
@@ -200,6 +216,7 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
     throw std::runtime_error("No valid aim position");
   }
   calcYawAndPitch(aim_position, rpy, yaw, pitch);
+  applyAimCorrections(target.v_yaw, yaw, pitch);
   distance = aim_position.norm();
 
   rm_interfaces::msg::GimbalCmd gimbal_cmd;
@@ -343,6 +360,28 @@ void Solver::calcYawAndPitch(const Eigen::Vector3d &p,
   if (trajectory_compensator_->compensate(p, compensated_pitch)) {
     pitch = compensated_pitch;
   }
+}
+
+void Solver::applyAimCorrections(const double target_v_yaw,
+                                 double &yaw,
+                                 double &pitch) const noexcept {
+  yaw = normalizeAngle(yaw + yaw_offset_deg_ * M_PI / 180.0);
+  pitch += pitch_offset_deg_ * M_PI / 180.0;
+
+  const double speed = std::abs(target_v_yaw);
+  const double threshold = std::max(0.0, high_yaw_compensation_threshold_);
+  const double reference = std::max(threshold + 1e-6, high_yaw_compensation_reference_);
+  const double max_offset = std::max(0.0, max_high_yaw_pitch_offset_deg_);
+  if (speed <= threshold || max_offset <= 0.0) {
+    return;
+  }
+
+  double normalized = 1.0;
+  if (threshold > 1e-6 && reference > threshold + 1e-6) {
+    normalized = std::log(speed / threshold) / std::log(reference / threshold);
+  }
+  normalized = std::clamp(normalized, 0.0, 1.0);
+  pitch -= normalized * max_offset * M_PI / 180.0;
 }
 
 }  // namespace fyt::auto_aim

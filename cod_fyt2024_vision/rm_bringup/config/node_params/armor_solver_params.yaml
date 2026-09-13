@@ -30,6 +30,11 @@
       center_tracking_distance: 1.5
       coming_angle: 55.0
       leaving_angle: 20.0
+      yaw_offset: 0.0
+      pitch_offset: 0.0
+      high_yaw_pitch_compensation_threshold: 6.0
+      high_yaw_pitch_compensation_reference: 10.0
+      max_high_yaw_pitch_offset: 1.2
       fire_margin: 0.8
       min_fire_tolerance: 1.0
       max_fire_tolerance: 4.0
