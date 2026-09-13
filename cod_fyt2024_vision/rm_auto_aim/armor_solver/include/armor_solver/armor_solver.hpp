@@ -18,7 +18,9 @@
 #define ARMOR_SOLVER_SOLVER_HPP_
 
 // std
+#include <array>
 #include <memory>
+#include <vector>
 // ros2
 #include <tf2_ros/buffer.h>
 
@@ -32,6 +34,10 @@
 #include "rm_utils/math/trajectory_compensator.hpp"
 
 namespace fyt::auto_aim {
+
+constexpr double SMALL_ARMOR_HALF_WIDTH = 0.133 / 2.0;
+constexpr double LARGE_ARMOR_HALF_WIDTH = 0.225 / 2.0;
+
 // Solver class used to solve the gimbal command from tracked target
 class Solver {
 public:
@@ -67,7 +73,8 @@ private:
                       const Eigen::Vector3d &target_center,
                       const double target_yaw,
                       const double target_v_yaw,
-                      const size_t armors_num) const noexcept;
+                      const size_t armors_num,
+                      double &selected_delta_angle) noexcept;
 
   void calcYawAndPitch(const Eigen::Vector3d &p,
                        const std::array<double, 3> rpy,
@@ -78,22 +85,30 @@ private:
                   const double cur_pitch,
                   const double target_yaw,
                   const double target_pitch,
-                  const double distance) const noexcept;
+                  const double distance,
+                  const size_t armors_num,
+                  const double armor_delta_angle) const noexcept;
 
   std::unique_ptr<TrajectoryCompensator> trajectory_compensator_;
 
   double prediction_delay_;
   double controller_delay_;
 
-  double shooting_range_w_;
   double shooting_range_h_;
 
   double max_tracking_v_yaw_;
   int overflow_count_;
   int transfer_thresh_;
 
-  double side_angle_;
   double min_switching_v_yaw_;
+  double coming_angle_;
+  double leaving_angle_;
+  double center_tracking_distance_;
+  int lock_id_ = -1;
+
+  double fire_margin_;
+  double min_fire_tolerance_rad_;
+  double max_fire_tolerance_rad_;
 
   std::weak_ptr<rclcpp::Node> node_;
 };
