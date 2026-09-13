@@ -38,7 +38,7 @@
 * `armor.min_small_center_distance` (`double`, default: 0.8) - 小装甲板最小中心距离长宽比
 * `armor.max_small_center_distance` (`double`, default: 3.2) - 小装甲板最大中心距离长宽比
 * `armor.min_large_center_distance` (`double`, default: 1.8) - 大装甲板最小中心距离长宽比
-* `armor.max_large_center_distance` (`double`, default: 6.4) - 大装甲板最大中心距离长宽比
+* `armor.max_large_center_distance` (`double`, default: 9.0) - 大装甲板最大中心距离长宽比
 * `armor.max_angle` (`double`, default: 35.0) - 装甲板最大倾斜角度
 * `use_ba` (`bool`, default: true) - 启用装甲板 yaw 重投影搜索优化（参数名保留以兼容旧配置）
 * `pnp_solution_selection` (`bool`, default: true) - 按俯仰先验选择 IPPE 的多解结果

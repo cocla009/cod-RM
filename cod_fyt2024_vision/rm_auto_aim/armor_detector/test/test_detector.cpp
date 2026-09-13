@@ -39,7 +39,7 @@ TEST(ArmorDetectorNodeTest, NodeStartupTest) {
                                     .min_small_center_distance = 0.8,
                                     .max_small_center_distance = 3.2,
                                     .min_large_center_distance = 3.2,
-                                    .max_large_center_distance = 5.0,
+                                    .max_large_center_distance = 9.0,
                                     .max_angle = 35.0};
 
   auto detector = std::make_unique<Detector>(binary_thres, EnemyColor::RED, l_params, a_params);
