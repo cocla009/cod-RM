@@ -51,6 +51,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_aim_correction test/test_aim_correction.cpp)
 
+  ament_add_gtest(test_target_ekf_model test/test_target_ekf_model.cpp)
+  target_link_libraries(test_target_ekf_model ${PROJECT_NAME})
+
 endif()
 
 #############
