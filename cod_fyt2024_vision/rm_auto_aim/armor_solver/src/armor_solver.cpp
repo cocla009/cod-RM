@@ -22,6 +22,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include "armor_solver/aim_correction.hpp"
 #include "armor_solver/armor_solver_node.hpp"
 #include "rm_utils/logger/log.hpp"
 
@@ -365,23 +366,13 @@ void Solver::calcYawAndPitch(const Eigen::Vector3d &p,
 void Solver::applyAimCorrections(const double target_v_yaw,
                                  double &yaw,
                                  double &pitch) const noexcept {
-  yaw = normalizeAngle(yaw + yaw_offset_deg_ * M_PI / 180.0);
-  pitch += pitch_offset_deg_ * M_PI / 180.0;
-
-  const double speed = std::abs(target_v_yaw);
-  const double threshold = std::max(0.0, high_yaw_compensation_threshold_);
-  const double reference = std::max(threshold + 1e-6, high_yaw_compensation_reference_);
-  const double max_offset = std::max(0.0, max_high_yaw_pitch_offset_deg_);
-  if (speed <= threshold || max_offset <= 0.0) {
-    return;
-  }
-
-  double normalized = 1.0;
-  if (threshold > 1e-6 && reference > threshold + 1e-6) {
-    normalized = std::log(speed / threshold) / std::log(reference / threshold);
-  }
-  normalized = std::clamp(normalized, 0.0, 1.0);
-  pitch -= normalized * max_offset * M_PI / 180.0;
+  const AimCorrectionParameters parameters{
+    yaw_offset_deg_,
+    pitch_offset_deg_,
+    high_yaw_compensation_threshold_,
+    high_yaw_compensation_reference_,
+    max_high_yaw_pitch_offset_deg_};
+  applyAimCorrection(target_v_yaw, parameters, yaw, pitch);
 }
 
 }  // namespace fyt::auto_aim

@@ -49,6 +49,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_node_startup test/test_node_startup.cpp)
   target_link_libraries(test_node_startup ${PROJECT_NAME})
 
+  ament_add_gtest(test_aim_correction test/test_aim_correction.cpp)
+
 endif()
 
 #############
