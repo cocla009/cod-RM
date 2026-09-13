@@ -68,7 +68,7 @@ Solver::Solver(std::weak_ptr<rclcpp::Node> n) : node_(n) {
   const double max_tolerance_deg =
     node->declare_parameter("solver.max_fire_tolerance", 4.0);
   min_fire_tolerance_rad_ = min_tolerance_deg * M_PI / 180.0;
-  max_fire_tolerance_rad_ = std::max(min_fire_tolerance_deg, max_tolerance_deg) * M_PI / 180.0;
+  max_fire_tolerance_rad_ = std::max(min_tolerance_deg, max_tolerance_deg) * M_PI / 180.0;
 
   const auto compensator_type = node->declare_parameter("solver.compensator_type", "ideal");
   trajectory_compensator_ = CompensatorFactory::createCompensator(compensator_type);

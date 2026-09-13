@@ -50,6 +50,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_node_startup ${PROJECT_NAME})
 
   ament_add_gtest(test_aim_correction test/test_aim_correction.cpp)
+  target_link_libraries(test_aim_correction ${PROJECT_NAME})
 
   ament_add_gtest(test_target_ekf_model test/test_target_ekf_model.cpp)
   target_link_libraries(test_target_ekf_model ${PROJECT_NAME})

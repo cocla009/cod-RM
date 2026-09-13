@@ -54,7 +54,7 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   auto j_f = [this](const Eigen::VectorXd &) {
     return TargetEkfModel::transitionJacobian(dt_);
   };
-  auto h = [this](const Eigen::VectorXd &x) {
+  auto h = [this](const Eigen::VectorXd &x) -> Eigen::VectorXd {
     Eigen::Vector4d observation = Eigen::Vector4d::Zero();
     if (!TargetEkfModel::cartesianObservation(
           x, tracker_->activeArmorIndex(), tracker_->armorCount(), observation)) {
@@ -62,7 +62,7 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
     }
     return Eigen::VectorXd(observation);
   };
-  auto j_h = [this](const Eigen::VectorXd &x) {
+  auto j_h = [this](const Eigen::VectorXd &x) -> Eigen::MatrixXd {
     Eigen::MatrixXd jacobian;
     if (!TargetEkfModel::cartesianObservationJacobian(
           x, tracker_->activeArmorIndex(), tracker_->armorCount(), jacobian)) {
