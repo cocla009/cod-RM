@@ -20,6 +20,7 @@
 #ifndef RM_UTILS_KALMAN_FILTER_HPP_
 #define RM_UTILS_KALMAN_FILTER_HPP_
 
+#include <cstddef>
 #include <Eigen/Dense>
 #include <deque>
 #include <functional>

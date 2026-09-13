@@ -59,25 +59,7 @@
   ```bash
   sudo apt install libfmt-dev
   ```
-- Sophus库 (G2O库依赖)
-   ```bash
-   git clone https://github.com/strasdat/Sophus
-   cd Sophus
-   mkdir build && cd build
-   cmake ..
-   make -j --load-average=4.0
-   sudo make install
-   ```
-- G2O库 (优化装甲板Yaw角度)
-    ```bash
-    sudo apt install libeigen3-dev libspdlog-dev libsuitesparse-dev qtdeclarative5-dev qt5-qmake libqglviewer-dev-qt5
-    git clone https://github.com/RainerKuemmerle/g2o
-    cd g2o
-    mkdir build && cd build
-    cmake ..
-     make -j --load-average=4.0
-    sudo make install
-    ```
+- 装甲板 yaw 优化使用 Eigen/OpenCV 的确定性重投影搜索，不再需要额外安装 G2O 或 Sophus。
 ### 3. 能量机关
 - OpenVINO库 (能量机关识别)
   

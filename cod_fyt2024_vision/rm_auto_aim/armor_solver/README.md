@@ -19,20 +19,19 @@
 
 * `debug` (`bool`, default: false) - 是否开启调试模式
 * `target_frame` (`string`, default: "odom") - 目标坐标系
-* `ekf.sigma2_q_xyz` (`double`, default: 0.05) - 状态转移噪声方差 (x,y,z)
-* `ekf.sigma2_q_yaw` (`double`, default: 1.0) - 状态转移噪声方差 (yaw)
-* `ekf.sigma2_q_r` (`double`, default: 80.0) - 状态转移噪声方差 (r)
-* `r_xyz_factor` (`double`, default: 1.0) - 位置观测噪声方差系数 (x,y,z)
-* `r_yaw_factor` (`double`, default: 1.0) - 位置观测噪声方差系数 (yaw)
+* `ekf.sigma2_q_x/y/z/yaw/r` - 分别控制平面、竖直、偏航和半径状态的过程噪声
+* `ekf.r_x/y/z/r_yaw` - 观测噪声参数，按观测距离调整位置观测噪声
 * `tracker.max_match_distance` (`double`, default: 0.5) - 两帧间目标可匹配的最大距离
 * `tracker.max_match_yaw_diff` (`double`, default: 0.5) - 两帧间目标同一块装甲板可匹配的最大yaw角差（大于这个值则认为装甲板发生跳变）
 * `tracker.tracking_thres` (`int`, default: 2) - `DETECTING` 状态进入 `TRACKING` 状态需要连续识别到的帧数
 * `tracker.lost_thres` (`double`, default: 1.0) - `TRACKING` 状态进入 `LOST` 状态需要连续丢失的时间（s）
-* `solver.prediction_delay` (`double`, default: 0.0) - 预测延迟时间（s），会影响选版
-* `solver.controller_delay` (`double`, default: 0.0) - 控制延迟时间（s），不会影响选版
-* `solver.max_tracking_v_yaw` (`double`, default: 60.0) - 转速大于这个值时，瞄准中心
-* `solver.side_angle` (`double`, default: 15.0) - 跳转到下一装甲板的角度阈值
-* `solver.bullet_speed` (`double`, default: 25.0) - 子弹速度
+* `solver.prediction_delay` (`double`) - 预测延迟时间（s）
+* `solver.controller_delay` (`double`) - 控制执行延迟时间（s）
+* `solver.max_tracking_v_yaw` (`double`) - 近距离高速旋转时进入中心跟踪的角速度阈值
+* `solver.center_tracking_distance` (`double`) - 中心跟踪的距离阈值（m）
+* `solver.coming_angle` / `solver.leaving_angle` (`double`) - 高速旋转时的非对称选板窗口（度）
+* `solver.fire_margin`、`solver.min_fire_tolerance`、`solver.max_fire_tolerance` - 动态开火窗口参数
+* `solver.bullet_speed` (`double`) - 子弹速度（m/s）
 * `solver.gravity` (`double`, default: 9.8) - 重力加速度
 * `solver.compensator_type` (`string`, default: "ideal") - 补偿器类型
 * `solver.resistance` (`double`, default: 0.001) - 空气阻力
@@ -85,7 +84,9 @@ $$ K = P_{k|k-1} * H^T * (H * P_{k|k-1} * H^T + R)^{-1} $$
 
 $$ x_{k|k} = x_{k|k-1} + K * (z_k - H * x_{k|k-1}) $$
 
-$$ P_{k|k} = (I - K * H) * P_{k|k-1} $$
+$$ P_{k|k} = (I - K H)P_{k|k-1}(I - K H)^T + K R K^T $$
+
+滤波器同时计算归一化创新平方（NIS）；在 50 帧窗口内异常比例达到 40% 时自动放弃当前跟踪，等待重新初始化。
 
 ## Tracker
 
@@ -114,5 +115,3 @@ $$ P_{k|k} = (I - K * H) * P_{k|k-1} $$
   首先由卡尔曼滤波器得到目标在当前帧的预测位置，然后遍历当前帧中的目标位置与预测位置进行匹配，若当前帧不存在目标或所有目标位置与预测位置的偏差都过大则认为目标丢失，重置卡尔曼滤波器。
   
   最后选取位置相差最小的目标作为最佳匹配项，更新卡尔曼滤波器，将更新后的状态作为跟踪器的结果输出
-
-

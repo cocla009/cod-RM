@@ -19,6 +19,7 @@
 
 #include "rm_utils/math/extended_kalman_filter.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace fyt {

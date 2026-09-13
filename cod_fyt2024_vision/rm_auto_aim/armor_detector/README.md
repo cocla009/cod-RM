@@ -40,6 +40,8 @@
 * `armor.min_large_center_distance` (`double`, default: 1.8) - 大装甲板最小中心距离长宽比
 * `armor.max_large_center_distance` (`double`, default: 6.4) - 大装甲板最大中心距离长宽比
 * `armor.max_angle` (`double`, default: 35.0) - 装甲板最大倾斜角度
+* `use_ba` (`bool`, default: true) - 启用装甲板 yaw 重投影搜索优化（参数名保留以兼容旧配置）
+* `pnp_solution_selection` (`bool`, default: true) - 按俯仰先验选择 IPPE 的多解结果
 
 
 ## Detector
@@ -107,6 +109,9 @@
 
 如图PCA1和PCA2所示，这种方法获得的角点在不同光照下表现出一致性，可以提高PnP的准确性。
 
-## BA优化
+## 姿态优化
 
-TODO
+`use_ba` 保留原有参数名以兼容启动配置，但实现已改为确定性的两阶段 yaw
+重投影搜索：先以 1 度步长搜索完整周期，再在最优值附近以 0.1 度步长精搜索。
+该算法不依赖 G2O/Sophus，也不会把历史队列中的不同平移向量混合；PnP 提供平移
+初值，固定俯仰先验用于构造最终相机到装甲板旋转矩阵。
