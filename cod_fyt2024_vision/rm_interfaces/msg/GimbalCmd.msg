@@ -12,3 +12,7 @@ float64 yaw_jerk
 float64 pitch_jerk
 bool mpc_valid
 bool fire_advice
+# Command contract: 0=position-compatible, 1=jerk-controlled.
+uint8 control_mode
+uint64 command_sequence
+float64 command_dt

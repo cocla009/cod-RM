@@ -19,6 +19,7 @@
 
 // std
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <vector>
 // ros2
@@ -142,6 +143,7 @@ private:
   double previous_gimbal_yaw_velocity_ = 0.0;
   double previous_gimbal_pitch_velocity_ = 0.0;
   rclcpp::Time previous_gimbal_time_;
+  std::uint64_t command_sequence_ = 0;
 
   std::weak_ptr<rclcpp::Node> node_;
 };

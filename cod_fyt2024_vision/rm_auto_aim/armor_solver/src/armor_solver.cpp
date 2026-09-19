@@ -24,6 +24,7 @@
 
 #include "armor_solver/aim_correction.hpp"
 #include "armor_solver/armor_solver_node.hpp"
+#include "armor_solver/gimbal_command_contract.hpp"
 #include "armor_solver/trajectory_planner.hpp"
 #include "rm_utils/logger/log.hpp"
 
@@ -431,6 +432,7 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
 
   rm_interfaces::msg::GimbalCmd gimbal_cmd;
   gimbal_cmd.header = target.header;
+  gimbal_cmd.header.stamp = current_time;
   gimbal_cmd.distance = distance;
   gimbal_cmd.yaw = command_yaw * 180.0 / M_PI;
   gimbal_cmd.pitch = command_pitch * 180.0 / M_PI;
@@ -443,6 +445,9 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
   gimbal_cmd.yaw_jerk = command_yaw_jerk * 180.0 / M_PI;
   gimbal_cmd.pitch_jerk = command_pitch_jerk * 180.0 / M_PI;
   gimbal_cmd.mpc_valid = mpc_valid;
+  gimbal_cmd.control_mode = mpc_valid ? 1U : 0U;
+  gimbal_cmd.command_sequence = ++command_sequence_;
+  gimbal_cmd.command_dt = mpc_valid ? mpc_dt_ : 0.0;
   gimbal_cmd.fire_advice = planning_safe && mpc_safe && isOnTarget(rpy[2],
                                                                     rpy[1],
                                                                     yaw,
@@ -453,6 +458,14 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
   if (state == State::TRACKING_CENTER) {
     // Center tracking keeps the gimbal motion continuous but does not identify
     // an actual armor plate that is safe to fire at.
+    gimbal_cmd.fire_advice = false;
+  }
+  if (!isValidGimbalCommand(gimbal_cmd)) {
+    gimbal_cmd.control_mode = 0U;
+    gimbal_cmd.mpc_valid = false;
+    gimbal_cmd.yaw_jerk = 0.0;
+    gimbal_cmd.pitch_jerk = 0.0;
+    gimbal_cmd.command_dt = 0.0;
     gimbal_cmd.fire_advice = false;
   }
   previous_gimbal_yaw_ = rpy[2];

@@ -62,7 +62,7 @@ class FixedPacket {
 
   // 自定义解析数据
   template <typename T, int data_len = sizeof(T)>
-  bool unloadData(T &data, int index) {
+  bool unloadData(T &data, int index) const {
     // 越界检测
     if (index > 0 && ((index + data_len) < (capacity))) {
       memcpy(&data, buffer_ + index, data_len);
