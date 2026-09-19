@@ -1,7 +1,7 @@
 {
   "task": "armor_solver_mpc_interface_sync",
   "phase": "phase_2_versioned_jerk_protocol",
-  "updated_at": "2026-09-19",
+  "updated_at": "2026-09-20",
   "baseline_commit": "109d96f",
   "commit": "fb58309",
   "completed": [
@@ -17,11 +17,15 @@
     "versioned jerk packet round-trip -Wall -Wextra -Werror: pass",
     "versioned jerk packet ASAN/UBSAN: pass",
     "existing gimbal_mpc and gimbal_mpc_closed_loop binaries: pass",
-    "git diff --check: pass"
+    "git diff --check: pass",
+    "colcon build with system Python and workspace overlay: pass",
+    "armor_solver ctest: 12/12 pass",
+    "rm_serial_driver ctest: 5/5 pass",
+    "ros2 interface show rm_interfaces/msg/GimbalCmd: pass"
   ],
   "environment_limits": [
-    "colcon build blocked by missing rosidl_typesupport_c in the environment",
-    "full protocol translation unit compile blocked by incomplete ROS include installation"
+    "Conda Python was missing em; fixed by AMENT_PYTHON_EXECUTABLE=/usr/bin/python3",
+    "workspace overlay must be sourced before building dependent packages"
   ],
   "next_phase": "confirm_lower_controller_v2_frame_and_add_protocol_integration_test",
   "exit": false
