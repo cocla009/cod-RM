@@ -78,6 +78,7 @@ if(BUILD_TESTING)
 
   add_executable(test_gimbal_command_contract test/test_gimbal_command_contract.cpp)
   target_include_directories(test_gimbal_command_contract PRIVATE include)
+  ament_target_dependencies(test_gimbal_command_contract rm_interfaces)
   add_test(NAME gimbal_command_contract COMMAND test_gimbal_command_contract)
 
   add_executable(test_aim_reference test/test_aim_reference.cpp
