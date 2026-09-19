@@ -76,6 +76,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_gimbal_mpc_closed_loop Eigen3::Eigen)
   add_test(NAME gimbal_mpc_closed_loop COMMAND test_gimbal_mpc_closed_loop)
 
+  add_executable(test_mpc_protocol_closed_loop
+    test/test_mpc_protocol_closed_loop.cpp src/gimbal_mpc.cpp)
+  target_include_directories(test_mpc_protocol_closed_loop PRIVATE
+    include ${CMAKE_CURRENT_SOURCE_DIR}/../../rm_hardware_driver/rm_serial_driver/include)
+  add_test(NAME mpc_protocol_closed_loop COMMAND test_mpc_protocol_closed_loop)
+
   add_executable(test_gimbal_command_contract test/test_gimbal_command_contract.cpp)
   target_include_directories(test_gimbal_command_contract PRIVATE include)
   ament_target_dependencies(test_gimbal_command_contract rm_interfaces)
