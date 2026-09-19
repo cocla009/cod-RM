@@ -17,6 +17,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 #######################
 
 find_package(ament_cmake_auto REQUIRED)
+find_package(Eigen3 REQUIRED)
 ament_auto_find_build_dependencies()
 
 ###########
@@ -26,6 +27,8 @@ ament_auto_find_build_dependencies()
 ament_auto_add_library(${PROJECT_NAME} SHARED
   DIRECTORY src
 )
+target_sources(${PROJECT_NAME} PRIVATE src/tracker_logic.cpp)
+target_sources(${PROJECT_NAME} PRIVATE src/gimbal_mpc.cpp src/aim_reference.cpp)
 
 rclcpp_components_register_node(${PROJECT_NAME}
   PLUGIN fyt::auto_aim::ArmorSolverNode
@@ -54,6 +57,24 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_target_ekf_model test/test_target_ekf_model.cpp)
   target_link_libraries(test_target_ekf_model ${PROJECT_NAME})
+
+  ament_add_gtest(test_trajectory_planner test/test_trajectory_planner.cpp)
+  target_link_libraries(test_trajectory_planner ${PROJECT_NAME})
+
+  add_executable(test_tracker_logic test/test_tracker_logic.cpp src/tracker_logic.cpp)
+  target_include_directories(test_tracker_logic PRIVATE include)
+  add_test(NAME tracker_logic COMMAND test_tracker_logic)
+
+  add_executable(test_gimbal_mpc test/test_gimbal_mpc.cpp src/gimbal_mpc.cpp)
+  target_include_directories(test_gimbal_mpc PRIVATE include)
+  target_link_libraries(test_gimbal_mpc Eigen3::Eigen)
+  add_test(NAME gimbal_mpc COMMAND test_gimbal_mpc)
+
+  add_executable(test_aim_reference test/test_aim_reference.cpp
+    src/aim_reference.cpp src/trajectory_planner.cpp)
+  target_include_directories(test_aim_reference PRIVATE include)
+  target_link_libraries(test_aim_reference Eigen3::Eigen)
+  add_test(NAME aim_reference COMMAND test_aim_reference)
 
 endif()
 

@@ -18,6 +18,7 @@
 
 #include "armor_solver/armor_tracker.hpp"
 // std
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <limits>
@@ -31,6 +32,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 // project
 #include "rm_utils/logger/log.hpp"
+#include "armor_solver/tracker_logic.hpp"
 
 namespace fyt::auto_aim {
 Tracker::Tracker(double max_match_distance, double max_match_yaw_diff)
@@ -98,12 +100,28 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
 
     if (has_candidate && min_position_diff < max_match_distance_ &&
         yaw_diff < max_match_yaw_diff_) {
+      const int previous_count = armorCount();
+      const int observed_count = tracker_logic::armorCountFor(
+        matched_armor.number, matched_armor.type);
+      const bool count_changed = observed_count != previous_count;
       tracked_armor = matched_armor;
-      active_armor_index_ = matched_index;
+      if (count_changed) {
+        updateArmorCount(matched_armor);
+        active_armor_index_ = tracker_logic::remapArmorIndex(
+          matched_yaw, target_state(YAW), observed_count);
+      } else {
+        active_armor_index_ = matched_index;
+      }
       auto p = tracked_armor.pose.position;
       if (setSphericalMeasurement(p, matched_yaw)) {
         matched = true;
-        target_state = ekf.update(measurement);
+        if (count_changed) {
+          // A geometry change invalidates the old index and velocity mapping.
+          handleArmorJump(matched_armor, active_armor_index_, matched_yaw);
+          ekf.resetInnovationHistory();
+        } else {
+          target_state = ekf.update(measurement);
+        }
         if (ekf.isDiverged()) {
           FYT_WARN("armor_solver", "EKF innovation statistics diverged, resetting tracker");
           tracker_state = LOST;
@@ -114,10 +132,22 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
         FYT_WARN("armor_solver", "Rejecting singular spherical armor measurement");
       }
     } else if (has_candidate && yaw_diff > max_match_yaw_diff_) {
+      const int previous_count = armorCount();
+      const int observed_count = tracker_logic::armorCountFor(
+        matched_armor.number, matched_armor.type);
+      const bool count_changed = observed_count != previous_count;
       const auto p = matched_armor.pose.position;
       if (setSphericalMeasurement(p, matched_yaw)) {
         tracked_armor = matched_armor;
-        handleArmorJump(matched_armor, matched_index, matched_yaw);
+        if (count_changed) {
+          updateArmorCount(matched_armor);
+          active_armor_index_ = tracker_logic::remapArmorIndex(
+            matched_yaw, target_state(YAW), observed_count);
+        } else {
+          active_armor_index_ = matched_index;
+        }
+        handleArmorJump(matched_armor, active_armor_index_, matched_yaw);
+        ekf.resetInnovationHistory();
         matched = true;
       } else {
         FYT_WARN("armor_solver", "Rejecting singular spherical armor measurement");
@@ -160,7 +190,7 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
   if (tracker_state == DETECTING) {
     if (matched) {
       detect_count_++;
-      if (detect_count_ > tracking_thres) {
+      if (detect_count_ >= std::max(1, tracking_thres)) {
         detect_count_ = 0;
         tracker_state = TRACKING;
         FYT_DEBUG("armor_solver", "Tracker state: TRACKING {}", tracked_id);
@@ -171,7 +201,9 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
       FYT_DEBUG("armor_solver", "Tracker state: LOST {}", tracked_id);
     }
   } else if (tracker_state == TRACKING) {
-    if (!matched) {
+    if (matched) {
+      lost_count_ = 0;
+    } else {
       tracker_state = TEMP_LOST;
       lost_count_++;
       FYT_DEBUG("armor_solver", "Tracker state: TEMP_LOST {}", tracked_id);
@@ -179,7 +211,7 @@ void Tracker::update(const Armors::SharedPtr &armors_msg) noexcept {
   } else if (tracker_state == TEMP_LOST) {
     if (!matched) {
       lost_count_++;
-      if (lost_count_ > lost_thres) {
+      if (lost_count_ >= std::max(1, lost_thres)) {
         lost_count_ = 0;
         tracker_state = LOST;
         FYT_DEBUG("armor_solver", "Tracker state: LOST {}", tracked_id);
@@ -291,10 +323,12 @@ bool Tracker::findBestMatch(const Armors::SharedPtr &armors_msg,
   }
 
   const int count = armorCount();
-  double best_cost = std::numeric_limits<double>::infinity();
   bool found = false;
+  std::size_t observation_index = 0;
+  tracker_logic::MatchCandidate best_candidate;
   for (const auto &armor : armors_msg->armors) {
     if (armor.number != tracked_id) {
+      ++observation_index;
       continue;
     }
 
@@ -308,12 +342,14 @@ bool Tracker::findBestMatch(const Armors::SharedPtr &armors_msg,
         target_state(YAW) + index * 2.0 * M_PI / static_cast<double>(count));
       const double candidate_position_diff = (predicted_position - measured_position).norm();
       const double candidate_yaw_diff =
-        std::abs(TargetEkfModel::normalizeAngle(measured_yaw - predicted_yaw));
+        tracker_logic::normalizedYawResidual(measured_yaw, predicted_yaw);
       const double candidate_cost = candidate_position_diff / std::max(max_match_distance_, 1e-6) +
                                     candidate_yaw_diff / std::max(max_match_yaw_diff_, 1e-6);
+      const tracker_logic::MatchCandidate candidate{
+        observation_index, index, candidate_cost, candidate_position_diff, candidate_yaw_diff};
 
-      if (candidate_cost < best_cost) {
-        best_cost = candidate_cost;
+      if (tracker_logic::betterMatch(candidate, best_candidate)) {
+        best_candidate = candidate;
         matched_armor = armor;
         matched_index = index;
         matched_yaw = measured_yaw;
@@ -322,6 +358,7 @@ bool Tracker::findBestMatch(const Armors::SharedPtr &armors_msg,
         found = true;
       }
     }
+    ++observation_index;
   }
   return found;
 }

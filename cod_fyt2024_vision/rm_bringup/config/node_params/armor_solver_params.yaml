@@ -46,3 +46,18 @@
       gravity: 10.0
       resistance: 0.092
       iteration_times: 50
+      mpc:
+        enabled: true
+        dt: 0.01
+        horizon: 40
+        preview_steps: 1
+        position_weight: 40.0
+        velocity_weight: 4.0
+        acceleration_weight: 0.2
+        jerk_weight: 0.05
+        terminal_weight: 80.0
+        max_velocity: 12.0
+        max_acceleration: 50.0
+        max_jerk: 500.0
+        step_size: 0.002
+        max_iterations: 12

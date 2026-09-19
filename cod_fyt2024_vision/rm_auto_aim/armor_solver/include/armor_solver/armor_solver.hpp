@@ -32,6 +32,8 @@
 #include "rm_interfaces/msg/gimbal_cmd.hpp"
 #include "rm_interfaces/msg/target.hpp"
 #include "rm_utils/math/trajectory_compensator.hpp"
+#include "armor_solver/aim_reference.hpp"
+#include "armor_solver/gimbal_mpc.hpp"
 
 namespace fyt::auto_aim {
 
@@ -95,6 +97,13 @@ private:
                   const size_t armors_num,
                   const double armor_delta_angle) const noexcept;
 
+  bool buildMpcReference(const ArmorPlannerInput &planner_input,
+                         const ArmorPlannerConfig &planner_config,
+                         const std::array<double, 3> &rpy,
+                         const Eigen::Vector3d &center_position,
+                         const double target_v_yaw,
+                         AimReferenceResult &reference) noexcept;
+
   std::unique_ptr<TrajectoryCompensator> trajectory_compensator_;
 
   double prediction_delay_;
@@ -120,6 +129,18 @@ private:
   double fire_margin_;
   double min_fire_tolerance_rad_;
   double max_fire_tolerance_rad_;
+
+  bool mpc_enabled_;
+  std::size_t mpc_horizon_;
+  std::size_t mpc_preview_steps_;
+  double mpc_dt_;
+  GimbalMpc gimbal_mpc_;
+  bool gimbal_state_initialized_ = false;
+  double previous_gimbal_yaw_ = 0.0;
+  double previous_gimbal_pitch_ = 0.0;
+  double previous_gimbal_yaw_velocity_ = 0.0;
+  double previous_gimbal_pitch_velocity_ = 0.0;
+  rclcpp::Time previous_gimbal_time_;
 
   std::weak_ptr<rclcpp::Node> node_;
 };

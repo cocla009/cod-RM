@@ -24,13 +24,12 @@
 
 #include "armor_solver/aim_correction.hpp"
 #include "armor_solver/armor_solver_node.hpp"
+#include "armor_solver/trajectory_planner.hpp"
 #include "rm_utils/logger/log.hpp"
 
 namespace fyt::auto_aim {
 namespace {
 
-constexpr int kMaxPredictionIterations = 10;
-constexpr double kPredictionConvergence = 1e-3;
 constexpr double kMinValidDistance = 0.1;
 
 double normalizeAngle(const double angle) noexcept {
@@ -70,6 +69,28 @@ Solver::Solver(std::weak_ptr<rclcpp::Node> n) : node_(n) {
   min_fire_tolerance_rad_ = min_tolerance_deg * M_PI / 180.0;
   max_fire_tolerance_rad_ = std::max(min_tolerance_deg, max_tolerance_deg) * M_PI / 180.0;
 
+  mpc_enabled_ = node->declare_parameter("solver.mpc.enabled", true);
+  mpc_dt_ = node->declare_parameter("solver.mpc.dt", 0.01);
+  const int mpc_horizon = node->declare_parameter<int>("solver.mpc.horizon", 40);
+  const int mpc_preview_steps = node->declare_parameter<int>("solver.mpc.preview_steps", 1);
+  mpc_horizon_ = static_cast<std::size_t>(std::max(2, mpc_horizon));
+  mpc_preview_steps_ = static_cast<std::size_t>(std::max(0, mpc_preview_steps));
+  GimbalMpcConfig mpc_config;
+  mpc_config.dt = mpc_dt_;
+  mpc_config.horizon = mpc_horizon_;
+  mpc_config.position_weight = node->declare_parameter("solver.mpc.position_weight", 40.0);
+  mpc_config.velocity_weight = node->declare_parameter("solver.mpc.velocity_weight", 4.0);
+  mpc_config.acceleration_weight =
+    node->declare_parameter("solver.mpc.acceleration_weight", 0.2);
+  mpc_config.jerk_weight = node->declare_parameter("solver.mpc.jerk_weight", 0.05);
+  mpc_config.terminal_weight = node->declare_parameter("solver.mpc.terminal_weight", 80.0);
+  mpc_config.max_velocity = node->declare_parameter("solver.mpc.max_velocity", 12.0);
+  mpc_config.max_acceleration = node->declare_parameter("solver.mpc.max_acceleration", 50.0);
+  mpc_config.max_jerk = node->declare_parameter("solver.mpc.max_jerk", 500.0);
+  mpc_config.step_size = node->declare_parameter("solver.mpc.step_size", 0.002);
+  mpc_config.max_iterations = node->declare_parameter("solver.mpc.max_iterations", 12);
+  gimbal_mpc_.setConfig(mpc_config);
+
   const auto compensator_type = node->declare_parameter("solver.compensator_type", "ideal");
   trajectory_compensator_ = CompensatorFactory::createCompensator(compensator_type);
   if (!trajectory_compensator_) {
@@ -84,6 +105,68 @@ Solver::Solver(std::weak_ptr<rclcpp::Node> n) : node_(n) {
   state = State::TRACKING_ARMOR;
   overflow_count_ = 0;
   transfer_thresh_ = 5;
+}
+
+bool Solver::buildMpcReference(const ArmorPlannerInput &planner_input,
+                               const ArmorPlannerConfig &planner_config,
+                               const std::array<double, 3> &rpy,
+                               const Eigen::Vector3d &center_position,
+                               const double target_v_yaw,
+                               AimReferenceResult &reference) noexcept {
+  (void)rpy;
+  const auto pitch = [this, target_v_yaw](const Eigen::Vector3d &position, double &value) {
+    double yaw = 0.0;
+    calcYawAndPitch(position, {}, yaw, value);
+    applyAimCorrections(target_v_yaw, yaw, value);
+    return std::isfinite(yaw) && std::isfinite(value);
+  };
+
+  if (state == State::TRACKING_CENTER) {
+    reference.samples.clear();
+    reference.samples.reserve(mpc_horizon_);
+    for (std::size_t i = 0; i < mpc_horizon_; ++i) {
+      const double elapsed = static_cast<double>(i + 1) * mpc_dt_;
+      const Eigen::Vector3d position = center_position + elapsed * planner_input.velocity;
+      AimReferenceSample sample;
+      if (!pitch(position, sample.pitch)) {
+        reference.reason = "center_pitch_compensation_failed";
+        return false;
+      }
+      double yaw = 0.0;
+      calcYawAndPitch(position, {}, yaw, sample.pitch);
+      applyAimCorrections(target_v_yaw, yaw, sample.pitch);
+      sample.yaw = AimReferenceGenerator::unwrapNear(yaw, i == 0 ? rpy[2] : reference.samples.back().yaw);
+      sample.armor_index = 0;
+      reference.samples.push_back(sample);
+    }
+    reference.valid = true;
+    reference.safe = true;
+  } else {
+    reference = AimReferenceGenerator::generate(
+      planner_input, planner_config, mpc_dt_, mpc_horizon_,
+      [this](const Eigen::Vector3d &position) {
+        return trajectory_compensator_->getFlyingTime(position);
+      },
+      pitch,
+      lock_id_);
+  }
+
+  if (!reference.valid || reference.samples.size() != mpc_horizon_) return false;
+  for (std::size_t i = 0; i < reference.samples.size(); ++i) {
+    const auto previous_yaw = i == 0 ? rpy[2] : reference.samples[i - 1].yaw;
+    const auto next_yaw = i + 1 < reference.samples.size()
+                            ? reference.samples[i + 1].yaw
+                            : reference.samples[i].yaw;
+    const auto previous_pitch = i == 0 ? reference.samples[i].pitch : reference.samples[i - 1].pitch;
+    const auto next_pitch = i + 1 < reference.samples.size()
+                              ? reference.samples[i + 1].pitch
+                              : reference.samples[i].pitch;
+    const double denominator = (i == 0 || i + 1 == reference.samples.size()) ? mpc_dt_ : 2.0 * mpc_dt_;
+    reference.samples[i].yaw_velocity = (next_yaw - previous_yaw) / denominator;
+    reference.samples[i].pitch_velocity = (next_pitch - previous_pitch) / denominator;
+  }
+  reference.safe = reference.safe && !reference.selection_discontinuous;
+  return true;
 }
 
 rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &target,
@@ -135,57 +218,69 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
   const Eigen::Vector3d target_velocity(target.velocity.x,
                                         target.velocity.y,
                                         target.velocity.z);
+  const double raw_age = (current_time - rclcpp::Time(target.header.stamp)).seconds();
+  const bool unknown_timestamp = target.header.stamp.sec == 0 && target.header.stamp.nanosec == 0;
+  const double target_age = unknown_timestamp ? std::numeric_limits<double>::quiet_NaN() : raw_age;
+  const bool invalid_delay = prediction_delay_ < 0.0 || controller_delay_ < 0.0;
   const double processing_delay =
-    std::max(0.0, (current_time - rclcpp::Time(target.header.stamp)).seconds()) +
-    std::max(0.0, prediction_delay_) + std::max(0.0, controller_delay_);
+    std::max(0.0, raw_age) + std::max(0.0, prediction_delay_) + std::max(0.0, controller_delay_);
 
-  // The selected plate changes the distance, so recompute flight time using the
-  // nearest predicted plate until the estimate converges.
-  double flying_time = trajectory_compensator_->getFlyingTime(initial_position);
-  for (int iteration = 0; iteration < kMaxPredictionIterations; ++iteration) {
-    const double total_delay = processing_delay + flying_time;
-    const Eigen::Vector3d predicted_center = initial_position + total_delay * target_velocity;
-    const double predicted_yaw = target.yaw + total_delay * target.v_yaw;
-    const auto predicted_armors = getArmorPositions(predicted_center,
-                                                    predicted_yaw,
-                                                    target.radius_1,
-                                                    target.radius_2,
-                                                    target.dz,
-                                                    target.armors_num);
-    if (predicted_armors.empty()) {
+  ArmorPlannerInput planner_input;
+  planner_input.center = initial_position;
+  planner_input.velocity = target_velocity;
+  planner_input.yaw = target.yaw;
+  planner_input.v_yaw = target.v_yaw;
+  planner_input.radius_1 = target.radius_1;
+  planner_input.radius_2 = target.radius_2;
+  planner_input.dz = target.dz;
+  planner_input.armors_num = target.armors_num;
+  planner_input.target_age_seconds = target_age;
+
+  ArmorPlannerConfig planner_config;
+  planner_config.processing_delay = processing_delay;
+  planner_config.max_tracking_v_yaw = max_tracking_v_yaw_;
+  planner_config.min_switching_v_yaw = min_switching_v_yaw_;
+  planner_config.coming_angle = coming_angle_ * M_PI / 180.0;
+  planner_config.leaving_angle = leaving_angle_ * M_PI / 180.0;
+  planner_config.bullet_speed = trajectory_compensator_->velocity;
+  const auto planner_result = ArmorTrajectoryPlanner::plan(
+    planner_input,
+    planner_config,
+    [this](const Eigen::Vector3d &position) { return trajectory_compensator_->getFlyingTime(position); },
+    lock_id_);
+
+  bool planning_safe = planner_result.safe && !invalid_delay;
+  Eigen::Vector3d target_position = planner_result.predicted_center;
+  double target_yaw = planner_result.predicted_yaw;
+  std::vector<Eigen::Vector3d> armor_positions;
+  double selected_delta_angle = 0.0;
+  int selected_idx = 0;
+  if (planner_result.converged && !planner_result.armors.empty()) {
+    armor_positions.reserve(planner_result.armors.size());
+    for (const auto &armor : planner_result.armors) {
+      armor_positions.push_back(armor.position);
+    }
+    selected_idx = static_cast<int>(planner_result.selected_index);
+    selected_delta_angle = planner_result.selected_delta_angle;
+    lock_id_ = selected_idx;
+  } else {
+    // Keep a deterministic aim point for diagnostics, but never fire when
+    // planning failed, the target is stale, or the iteration did not converge.
+    planning_safe = false;
+    target_position = initial_position;
+    target_yaw = target.yaw;
+    armor_positions = getArmorPositions(
+      target_position, target_yaw, target.radius_1, target.radius_2, target.dz, target.armors_num);
+    if (armor_positions.empty()) {
       throw std::runtime_error("Target has no armor positions");
     }
-
-    auto nearest = predicted_armors.front();
-    for (const auto &armor : predicted_armors) {
-      if (armor.head<2>().squaredNorm() < nearest.head<2>().squaredNorm()) {
-        nearest = armor;
-      }
-    }
-    const double new_flying_time = trajectory_compensator_->getFlyingTime(nearest);
-    if (std::abs(new_flying_time - flying_time) < kPredictionConvergence) {
-      flying_time = new_flying_time;
-      break;
-    }
-    flying_time = new_flying_time;
+    selected_idx = selectBestArmor(armor_positions,
+                                   target_position,
+                                   target_yaw,
+                                   target.v_yaw,
+                                   target.armors_num,
+                                   selected_delta_angle);
   }
-
-  const double total_delay = processing_delay + flying_time;
-  Eigen::Vector3d target_position = initial_position + total_delay * target_velocity;
-  double target_yaw = target.yaw + total_delay * target.v_yaw;
-  auto armor_positions = getArmorPositions(
-    target_position, target_yaw, target.radius_1, target.radius_2, target.dz, target.armors_num);
-  if (armor_positions.empty()) {
-    throw std::runtime_error("Target has no armor positions");
-  }
-
-  double selected_delta_angle = 0.0;
-  const int selected_idx = selectBestArmor(armor_positions,
-                                           target_position,
-                                           target_yaw,
-                                           target.v_yaw,
-                                           target.armors_num,
-                                           selected_delta_angle);
   Eigen::Vector3d aim_position = armor_positions.at(static_cast<size_t>(selected_idx));
   double yaw = 0.0;
   double pitch = 0.0;
@@ -220,25 +315,112 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
   applyAimCorrections(target.v_yaw, yaw, pitch);
   distance = aim_position.norm();
 
+  const double state_dt = gimbal_state_initialized_
+                            ? (current_time - previous_gimbal_time_).seconds()
+                            : mpc_dt_;
+  const bool valid_state_dt = std::isfinite(state_dt) && state_dt > 1e-4 && state_dt < 0.5;
+  const double effective_state_dt = valid_state_dt ? state_dt : mpc_dt_;
+  const double yaw_velocity = gimbal_state_initialized_
+                                ? angles::shortest_angular_distance(previous_gimbal_yaw_, rpy[2]) /
+                                    effective_state_dt
+                                : 0.0;
+  const double pitch_velocity = gimbal_state_initialized_
+                                  ? (rpy[1] - previous_gimbal_pitch_) / effective_state_dt
+                                  : 0.0;
+  const double yaw_acceleration = gimbal_state_initialized_
+                                    ? (yaw_velocity - previous_gimbal_yaw_velocity_) /
+                                        effective_state_dt
+                                    : 0.0;
+  const double pitch_acceleration = gimbal_state_initialized_
+                                      ? (pitch_velocity - previous_gimbal_pitch_velocity_) /
+                                          effective_state_dt
+                                      : 0.0;
+
+  double command_yaw = yaw;
+  double command_pitch = pitch;
+  double command_yaw_velocity = 0.0;
+  double command_pitch_velocity = 0.0;
+  double command_yaw_acceleration = 0.0;
+  double command_pitch_acceleration = 0.0;
+  bool mpc_valid = false;
+  bool mpc_safe = !mpc_enabled_;
+  if (mpc_enabled_) {
+    AimReferenceResult reference;
+    const bool reference_valid = buildMpcReference(
+      planner_input,
+      planner_config,
+      rpy,
+      target_position,
+      target.v_yaw,
+      reference);
+    if (reference_valid) {
+      GimbalMpcInput mpc_input;
+      mpc_input.yaw = {rpy[2], yaw_velocity, yaw_acceleration};
+      mpc_input.pitch = {rpy[1], pitch_velocity, pitch_acceleration};
+      mpc_input.yaw_reference.position.reserve(reference.samples.size());
+      mpc_input.yaw_reference.velocity.reserve(reference.samples.size());
+      mpc_input.yaw_reference.acceleration.reserve(reference.samples.size());
+      mpc_input.pitch_reference.position.reserve(reference.samples.size());
+      mpc_input.pitch_reference.velocity.reserve(reference.samples.size());
+      mpc_input.pitch_reference.acceleration.reserve(reference.samples.size());
+      for (const auto &sample : reference.samples) {
+        mpc_input.yaw_reference.position.push_back(sample.yaw);
+        mpc_input.yaw_reference.velocity.push_back(sample.yaw_velocity);
+        mpc_input.yaw_reference.acceleration.push_back(sample.yaw_acceleration);
+        mpc_input.pitch_reference.position.push_back(sample.pitch);
+        mpc_input.pitch_reference.velocity.push_back(sample.pitch_velocity);
+        mpc_input.pitch_reference.acceleration.push_back(sample.pitch_acceleration);
+      }
+      const auto mpc_result = gimbal_mpc_.solve(mpc_input);
+      mpc_valid = mpc_result.valid;
+      mpc_safe = mpc_result.valid && mpc_result.converged && reference.safe;
+      if (mpc_valid && !mpc_result.yaw.predicted.empty() && !mpc_result.pitch.predicted.empty()) {
+        const auto index = std::min(
+          mpc_preview_steps_, std::min(mpc_result.yaw.predicted.size(), mpc_result.pitch.predicted.size()) - 1);
+        const auto &yaw_command = mpc_result.yaw.predicted[index];
+        const auto &pitch_command = mpc_result.pitch.predicted[index];
+        command_yaw = yaw_command.position;
+        command_yaw_velocity = yaw_command.velocity;
+        command_yaw_acceleration = yaw_command.acceleration;
+        command_pitch = pitch_command.position;
+        command_pitch_velocity = pitch_command.velocity;
+        command_pitch_acceleration = pitch_command.acceleration;
+      } else {
+        mpc_valid = false;
+      }
+    }
+  }
+
   rm_interfaces::msg::GimbalCmd gimbal_cmd;
   gimbal_cmd.header = target.header;
   gimbal_cmd.distance = distance;
-  gimbal_cmd.yaw = yaw * 180.0 / M_PI;
-  gimbal_cmd.pitch = pitch * 180.0 / M_PI;
-  gimbal_cmd.yaw_diff = angles::shortest_angular_distance(rpy[2], yaw) * 180.0 / M_PI;
-  gimbal_cmd.pitch_diff = (pitch - rpy[1]) * 180.0 / M_PI;
-  gimbal_cmd.fire_advice = isOnTarget(rpy[2],
-                                      rpy[1],
-                                      yaw,
-                                      pitch,
-                                      distance,
-                                      target.armors_num,
-                                      selected_delta_angle);
+  gimbal_cmd.yaw = command_yaw * 180.0 / M_PI;
+  gimbal_cmd.pitch = command_pitch * 180.0 / M_PI;
+  gimbal_cmd.yaw_diff = angles::shortest_angular_distance(rpy[2], command_yaw) * 180.0 / M_PI;
+  gimbal_cmd.pitch_diff = (command_pitch - rpy[1]) * 180.0 / M_PI;
+  gimbal_cmd.yaw_velocity = command_yaw_velocity * 180.0 / M_PI;
+  gimbal_cmd.yaw_acceleration = command_yaw_acceleration * 180.0 / M_PI;
+  gimbal_cmd.pitch_velocity = command_pitch_velocity * 180.0 / M_PI;
+  gimbal_cmd.pitch_acceleration = command_pitch_acceleration * 180.0 / M_PI;
+  gimbal_cmd.mpc_valid = mpc_valid;
+  gimbal_cmd.fire_advice = planning_safe && mpc_safe && isOnTarget(rpy[2],
+                                                                    rpy[1],
+                                                                    yaw,
+                                                                    pitch,
+                                                                    distance,
+                                                                    target.armors_num,
+                                                                    selected_delta_angle);
   if (state == State::TRACKING_CENTER) {
     // Center tracking keeps the gimbal motion continuous but does not identify
     // an actual armor plate that is safe to fire at.
     gimbal_cmd.fire_advice = false;
   }
+  previous_gimbal_yaw_ = rpy[2];
+  previous_gimbal_pitch_ = rpy[1];
+  previous_gimbal_yaw_velocity_ = yaw_velocity;
+  previous_gimbal_pitch_velocity_ = pitch_velocity;
+  previous_gimbal_time_ = current_time;
+  gimbal_state_initialized_ = true;
   return gimbal_cmd;
 }
 

@@ -4,4 +4,9 @@ float64 yaw
 float64 yaw_diff
 float64 pitch_diff
 float64 distance
+float64 yaw_velocity
+float64 yaw_acceleration
+float64 pitch_velocity
+float64 pitch_acceleration
+bool mpc_valid
 bool fire_advice
