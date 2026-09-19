@@ -134,6 +134,7 @@ private:
   std::size_t mpc_horizon_;
   std::size_t mpc_preview_steps_;
   double mpc_dt_;
+  double mpc_actuator_delay_;
   GimbalMpc gimbal_mpc_;
   bool gimbal_state_initialized_ = false;
   double previous_gimbal_yaw_ = 0.0;

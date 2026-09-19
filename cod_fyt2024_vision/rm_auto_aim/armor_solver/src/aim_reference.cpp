@@ -7,6 +7,7 @@
 namespace fyt::auto_aim {
 namespace {
 constexpr double kTwoPi = 2.0 * M_PI;
+constexpr double kMaxReferenceStep = 0.5 * M_PI;
 
 bool finiteSample(const AimReferenceSample &sample) noexcept {
   return std::isfinite(sample.yaw) && std::isfinite(sample.pitch) &&
@@ -27,9 +28,11 @@ AimReferenceResult AimReferenceGenerator::generate(
   const std::size_t horizon,
   const ArmorTrajectoryPlanner::FlightTimeFunction &flight_time,
   const PitchFunction &pitch,
-  const int previous_selected_index) noexcept {
+  const int previous_selected_index,
+  const double start_delay) noexcept {
   AimReferenceResult result;
-  if (!std::isfinite(dt) || dt <= 0.0 || horizon < 2 || !pitch) {
+  if (!std::isfinite(dt) || dt <= 0.0 || horizon < 2 || !pitch ||
+      !std::isfinite(start_delay) || start_delay < 0.0) {
     result.reason = "invalid_reference_config";
     return result;
   }
@@ -40,7 +43,7 @@ AimReferenceResult AimReferenceGenerator::generate(
   double previous_yaw = initial_yaw;
   for (std::size_t step = 0; step < horizon; ++step) {
     ArmorPlannerInput sample_input = input;
-    const double elapsed = static_cast<double>(step + 1) * dt;
+    const double elapsed = start_delay + static_cast<double>(step + 1) * dt;
     sample_input.center = input.center + elapsed * input.velocity;
     sample_input.yaw = input.yaw + elapsed * input.v_yaw;
     sample_input.target_age_seconds = std::numeric_limits<double>::quiet_NaN();
@@ -64,6 +67,13 @@ AimReferenceResult AimReferenceGenerator::generate(
       return result;
     }
     sample.armor_index = planned.selected_index;
+    if (!result.samples.empty()) {
+      const auto &previous = result.samples.back();
+      if (std::abs(sample.yaw - previous.yaw) > kMaxReferenceStep ||
+          std::abs(sample.pitch - previous.pitch) > kMaxReferenceStep) {
+        result.selection_discontinuous = true;
+      }
+    }
     result.samples.push_back(sample);
     previous_yaw = sample.yaw;
   }
@@ -98,6 +108,10 @@ AimReferenceResult AimReferenceGenerator::generate(
       (next_yaw_velocity - previous_yaw_velocity) / denominator;
     result.samples[i].pitch_acceleration =
       (next_pitch_velocity - previous_pitch_velocity) / denominator;
+    if (!finiteSample(result.samples[i])) {
+      result.reason = "nonfinite_reference";
+      return result;
+    }
   }
 
   result.valid = true;

@@ -8,5 +8,7 @@ float64 yaw_velocity
 float64 yaw_acceleration
 float64 pitch_velocity
 float64 pitch_acceleration
+float64 yaw_jerk
+float64 pitch_jerk
 bool mpc_valid
 bool fire_advice

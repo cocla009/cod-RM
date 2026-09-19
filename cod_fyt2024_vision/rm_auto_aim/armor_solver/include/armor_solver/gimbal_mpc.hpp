@@ -40,6 +40,7 @@ struct GimbalAxisResult {
   std::size_t iterations = 0;
   double objective = 0.0;
   double max_constraint_violation = 0.0;
+  double control = 0.0;
   GimbalAxisState command;
   std::vector<GimbalAxisState> predicted;
 };

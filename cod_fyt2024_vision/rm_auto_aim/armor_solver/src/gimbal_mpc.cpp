@@ -29,6 +29,22 @@ bool finiteReference(const GimbalAxisReference &reference) noexcept {
   return true;
 }
 
+bool feasibleReference(const GimbalAxisReference &reference,
+                       const GimbalMpcConfig &config) noexcept {
+  const double dt = std::max(config.dt, kEpsilon);
+  for (std::size_t i = 0; i < reference.position.size(); ++i) {
+    if (std::abs(reference.velocity[i]) > config.max_velocity + 1e-9 ||
+        std::abs(reference.acceleration[i]) > config.max_acceleration + 1e-9) {
+      return false;
+    }
+    if (i > 0 && std::abs(reference.acceleration[i] - reference.acceleration[i - 1]) / dt >
+                   config.max_jerk + 1e-9) {
+      return false;
+    }
+  }
+  return true;
+}
+
 StateVector propagate(const StateVector &state, const double jerk, const double dt) noexcept {
   const double dt2 = dt * dt;
   const double dt3 = dt2 * dt;
@@ -49,30 +65,27 @@ void projectControls(const GimbalAxisState &initial,
                      std::vector<double> &controls) noexcept {
   StateVector state{initial.position, initial.velocity, initial.acceleration};
   for (double &control : controls) {
-    control = clampFinite(control, -config.max_jerk, config.max_jerk);
-    double next_acceleration = state[2] + config.dt * control;
-    next_acceleration = clampFinite(
-      next_acceleration, -config.max_acceleration, config.max_acceleration);
-
-    if (config.max_velocity > 0.0) {
-      const double predicted_velocity = state[1] +
-        config.dt * (state[2] + next_acceleration) * 0.5;
-      if (std::abs(predicted_velocity) > config.max_velocity) {
-        const double limited_velocity = std::copysign(config.max_velocity, predicted_velocity);
-        next_acceleration = clampFinite(
-          2.0 * (limited_velocity - state[1]) / std::max(config.dt, kEpsilon) - state[2],
-          -config.max_acceleration,
-          config.max_acceleration);
-      }
+    const double dt = std::max(config.dt, kEpsilon);
+    double lower_jerk = -config.max_jerk;
+    double upper_jerk = config.max_jerk;
+    if (config.max_acceleration > 0.0) {
+      lower_jerk = std::max(lower_jerk, (-config.max_acceleration - state[2]) / dt);
+      upper_jerk = std::min(upper_jerk, (config.max_acceleration - state[2]) / dt);
     }
-
-    control = clampFinite(
-      (next_acceleration - state[2]) / std::max(config.dt, kEpsilon),
-      -config.max_jerk,
-      config.max_jerk);
-    state = propagate(state, control, config.dt);
-    state[1] = clampFinite(state[1], -config.max_velocity, config.max_velocity);
-    state[2] = clampFinite(state[2], -config.max_acceleration, config.max_acceleration);
+    if (config.max_velocity > 0.0) {
+      const double half_dt_squared = 0.5 * dt * dt;
+      lower_jerk = std::max(
+        lower_jerk, (-config.max_velocity - state[1] - dt * state[2]) / half_dt_squared);
+      upper_jerk = std::min(
+        upper_jerk, (config.max_velocity - state[1] - dt * state[2]) / half_dt_squared);
+    }
+    if (lower_jerk > upper_jerk) {
+      // An already infeasible state cannot be repaired without violating a bound.
+      control = 0.0;
+      return;
+    }
+    control = clampFinite(control, lower_jerk, upper_jerk);
+    state = propagate(state, control, dt);
   }
 }
 
@@ -87,6 +100,26 @@ void rollout(const GimbalAxisState &initial,
   for (const double control : controls) {
     state = propagate(state, control, config.dt);
     states.push_back(state);
+  }
+}
+
+void seedControls(const GimbalAxisState &initial,
+                  const GimbalAxisReference &reference,
+                  const GimbalMpcConfig &config,
+                  std::vector<double> &controls) noexcept {
+  StateVector state{initial.position, initial.velocity, initial.acceleration};
+  const double position_gain = 2.2 * std::sqrt(
+    config.position_weight / std::max(config.acceleration_weight, kEpsilon));
+  const double velocity_gain = 1.5 * std::sqrt(
+    config.velocity_weight / std::max(config.acceleration_weight, kEpsilon));
+  for (std::size_t i = 0; i < controls.size(); ++i) {
+    const double position_error = reference.position[i] - state[0];
+    const double velocity_error = reference.velocity[i] - state[1];
+    const double desired_acceleration = reference.acceleration[i] +
+      position_gain * position_error + velocity_gain * velocity_error;
+    controls[i] = (desired_acceleration - state[2]) / std::max(config.dt, kEpsilon);
+    controls[i] = clampFinite(controls[i], -config.max_jerk, config.max_jerk);
+    state = propagate(state, controls[i], config.dt);
   }
 }
 
@@ -116,6 +149,47 @@ double objective(const std::vector<StateVector> &states,
       (position_error * position_error + velocity_error * velocity_error);
   }
   return result;
+}
+
+std::vector<double> analyticGradient(const std::vector<StateVector> &states,
+                                     const std::vector<double> &controls,
+                                     const GimbalAxisReference &reference,
+                                     const GimbalMpcConfig &config) noexcept {
+  const std::size_t count = controls.size();
+  std::vector<double> gradient(count, 0.0);
+  if (states.size() != count + 1 || reference.position.size() < count) return gradient;
+
+  const double dt = config.dt;
+  const double dt2 = dt * dt;
+  const double dt3 = dt2 * dt;
+  StateVector costate_next{0.0, 0.0, 0.0};
+  for (std::size_t reverse = count; reverse > 0; --reverse) {
+    const std::size_t state_index = reverse;
+    const std::size_t reference_index = state_index - 1;
+    const auto &state = states[state_index];
+    StateVector costate{
+      2.0 * config.position_weight * (state[0] - reference.position[reference_index]),
+      2.0 * config.velocity_weight * (state[1] - reference.velocity[reference_index]),
+      2.0 * config.acceleration_weight *
+        (state[2] - reference.acceleration[reference_index])};
+    if (state_index == count) {
+      costate[0] += 2.0 * config.terminal_weight *
+        (state[0] - reference.position[reference_index]);
+      costate[1] += 2.0 * config.terminal_weight *
+        (state[1] - reference.velocity[reference_index]);
+    }
+    costate[0] += costate_next[0];
+    costate[1] += costate_next[1];
+    costate[2] += costate_next[2];
+
+    const std::size_t control_index = state_index - 1;
+    gradient[control_index] = 2.0 * config.jerk_weight * controls[control_index] +
+      (dt3 / 6.0) * costate[0] + 0.5 * dt2 * costate[1] + dt * costate[2];
+
+    costate_next = {costate[0], dt * costate[0] + costate[1],
+                    0.5 * dt2 * costate[0] + dt * costate[1] + costate[2]};
+  }
+  return gradient;
 }
 
 double constraintViolation(const std::vector<StateVector> &states,
@@ -159,28 +233,38 @@ void GimbalMpc::setConfig(const GimbalMpcConfig &config) noexcept {
   config_.max_velocity = std::max(0.0, config_.max_velocity);
   config_.max_acceleration = std::max(0.0, config_.max_acceleration);
   config_.max_jerk = std::max(0.0, config_.max_jerk);
-  yaw_controls_.assign(config_.horizon, 0.0);
-  pitch_controls_.assign(config_.horizon, 0.0);
+  yaw_controls_.clear();
+  pitch_controls_.clear();
 }
 
 void GimbalMpc::reset() noexcept {
-  std::fill(yaw_controls_.begin(), yaw_controls_.end(), 0.0);
-  std::fill(pitch_controls_.begin(), pitch_controls_.end(), 0.0);
+  yaw_controls_.clear();
+  pitch_controls_.clear();
 }
 
 GimbalAxisResult GimbalMpc::solveAxis(const GimbalAxisState &initial,
                                       const GimbalAxisReference &reference,
                                       std::vector<double> &warm_controls) const noexcept {
   GimbalAxisResult result;
-  if (!finiteState(initial) || !finiteReference(reference) || reference.position.size() < 2 ||
+  if (!finiteState(initial) || !finiteReference(reference) ||
+      !feasibleReference(reference, config_) || reference.position.size() < 2 ||
       config_.horizon < 2 || config_.max_jerk <= 0.0 || config_.max_acceleration <= 0.0 ||
       config_.max_velocity <= 0.0) {
+    return result;
+  }
+  if (std::abs(initial.velocity) > config_.max_velocity + 1e-9 ||
+      std::abs(initial.acceleration) > config_.max_acceleration + 1e-9) {
     return result;
   }
 
   const std::size_t horizon = config_.horizon;
   std::vector<double> controls(horizon, 0.0);
-  for (std::size_t i = 0; i < horizon && i < warm_controls.size(); ++i) controls[i] = warm_controls[i];
+  seedControls(initial, reference, config_, controls);
+  if (warm_controls.size() >= horizon) {
+    for (std::size_t i = 0; i < horizon; ++i) {
+      controls[i] = 0.5 * (controls[i] + warm_controls[i]);
+    }
+  }
   projectControls(initial, config_, controls);
 
   std::vector<StateVector> states;
@@ -192,19 +276,7 @@ GimbalAxisResult GimbalMpc::solveAxis(const GimbalAxisState &initial,
   double max_delta = std::numeric_limits<double>::infinity();
   double step_size = config_.step_size;
   for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
-    std::vector<double> gradient(horizon, 0.0);
-    for (std::size_t control_index = 0; control_index < horizon; ++control_index) {
-      const double delta = std::max(1e-6, 1e-4 * std::abs(controls[control_index]));
-      std::vector<double> perturbed = controls;
-      perturbed[control_index] += delta;
-      projectControls(initial, config_, perturbed);
-      std::vector<StateVector> perturbed_states;
-      rollout(initial, config_, perturbed, perturbed_states);
-      const double perturbed_objective = objective(perturbed_states, perturbed, reference, config_);
-      gradient[control_index] = (perturbed_objective - current_objective) / delta;
-      if (!std::isfinite(gradient[control_index])) gradient[control_index] = 0.0;
-      gradient[control_index] += 2.0 * config_.jerk_weight * controls[control_index];
-    }
+    const auto gradient = analyticGradient(states, controls, reference, config_);
 
     std::vector<double> candidate = controls;
     max_delta = 0.0;
@@ -217,7 +289,9 @@ GimbalAxisResult GimbalMpc::solveAxis(const GimbalAxisState &initial,
     std::vector<StateVector> candidate_states;
     rollout(initial, config_, candidate, candidate_states);
     const double candidate_objective = objective(candidate_states, candidate, reference, config_);
-    if (candidate_objective <= current_objective || max_delta < config_.convergence_tolerance) {
+    const bool accepted = std::isfinite(candidate_objective) &&
+      candidate_objective <= current_objective;
+    if (accepted) {
       controls = std::move(candidate);
       states = std::move(candidate_states);
       current_objective = candidate_objective;
@@ -241,9 +315,17 @@ GimbalAxisResult GimbalMpc::solveAxis(const GimbalAxisState &initial,
      result.max_constraint_violation < 1e-8);
   result.predicted.reserve(states.size() - 1);
   for (std::size_t i = 1; i < states.size(); ++i) {
-    result.predicted.push_back({states[i][0], states[i][1], states[i][2]});
+    const GimbalAxisState predicted{states[i][0], states[i][1], states[i][2]};
+    if (!finiteState(predicted)) return GimbalAxisResult{};
+    result.predicted.push_back(predicted);
   }
   result.command = result.predicted.front();
+  result.control = controls.front();
+  if (!finiteState(result.command) || !std::isfinite(result.control) ||
+      !std::isfinite(result.objective) ||
+      !std::isfinite(result.max_constraint_violation)) {
+    return GimbalAxisResult{};
+  }
 
   warm_controls.assign(controls.begin() + 1, controls.end());
   warm_controls.push_back(controls.back());

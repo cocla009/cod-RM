@@ -37,7 +37,8 @@ public:
                                      std::size_t horizon,
                                      const ArmorTrajectoryPlanner::FlightTimeFunction &flight_time,
                                      const PitchFunction &pitch,
-                                     int previous_selected_index = -1) noexcept;
+                                     int previous_selected_index = -1,
+                                     double start_delay = 0.0) noexcept;
 
   static double unwrapNear(double angle, double reference) noexcept;
 };

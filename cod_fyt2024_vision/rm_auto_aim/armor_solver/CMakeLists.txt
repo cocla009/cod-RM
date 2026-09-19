@@ -70,6 +70,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_gimbal_mpc Eigen3::Eigen)
   add_test(NAME gimbal_mpc COMMAND test_gimbal_mpc)
 
+  add_executable(test_gimbal_mpc_closed_loop test/test_gimbal_mpc_closed_loop.cpp
+    src/gimbal_mpc.cpp src/aim_reference.cpp src/trajectory_planner.cpp)
+  target_include_directories(test_gimbal_mpc_closed_loop PRIVATE include)
+  target_link_libraries(test_gimbal_mpc_closed_loop Eigen3::Eigen)
+  add_test(NAME gimbal_mpc_closed_loop COMMAND test_gimbal_mpc_closed_loop)
+
   add_executable(test_aim_reference test/test_aim_reference.cpp
     src/aim_reference.cpp src/trajectory_planner.cpp)
   target_include_directories(test_aim_reference PRIVATE include)

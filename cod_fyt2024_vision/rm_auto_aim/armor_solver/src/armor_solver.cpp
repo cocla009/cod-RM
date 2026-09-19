@@ -72,7 +72,10 @@ Solver::Solver(std::weak_ptr<rclcpp::Node> n) : node_(n) {
   mpc_enabled_ = node->declare_parameter("solver.mpc.enabled", true);
   mpc_dt_ = node->declare_parameter("solver.mpc.dt", 0.01);
   const int mpc_horizon = node->declare_parameter<int>("solver.mpc.horizon", 40);
-  const int mpc_preview_steps = node->declare_parameter<int>("solver.mpc.preview_steps", 1);
+  // With no explicit actuator delay, apply the first predicted state. A later
+  // preview index must be justified by a measured command transport delay.
+  const int mpc_preview_steps = node->declare_parameter<int>("solver.mpc.preview_steps", 0);
+  mpc_actuator_delay_ = node->declare_parameter("solver.mpc.actuator_delay", 0.0);
   mpc_horizon_ = static_cast<std::size_t>(std::max(2, mpc_horizon));
   mpc_preview_steps_ = static_cast<std::size_t>(std::max(0, mpc_preview_steps));
   GimbalMpcConfig mpc_config;
@@ -125,7 +128,8 @@ bool Solver::buildMpcReference(const ArmorPlannerInput &planner_input,
     reference.samples.clear();
     reference.samples.reserve(mpc_horizon_);
     for (std::size_t i = 0; i < mpc_horizon_; ++i) {
-      const double elapsed = static_cast<double>(i + 1) * mpc_dt_;
+      const double elapsed = std::max(0.0, mpc_actuator_delay_) +
+        static_cast<double>(i + 1) * mpc_dt_;
       const Eigen::Vector3d position = center_position + elapsed * planner_input.velocity;
       AimReferenceSample sample;
       if (!pitch(position, sample.pitch)) {
@@ -148,7 +152,8 @@ bool Solver::buildMpcReference(const ArmorPlannerInput &planner_input,
         return trajectory_compensator_->getFlyingTime(position);
       },
       pitch,
-      lock_id_);
+      lock_id_,
+      std::max(0.0, mpc_actuator_delay_));
   }
 
   if (!reference.valid || reference.samples.size() != mpc_horizon_) return false;
@@ -164,6 +169,14 @@ bool Solver::buildMpcReference(const ArmorPlannerInput &planner_input,
     const double denominator = (i == 0 || i + 1 == reference.samples.size()) ? mpc_dt_ : 2.0 * mpc_dt_;
     reference.samples[i].yaw_velocity = (next_yaw - previous_yaw) / denominator;
     reference.samples[i].pitch_velocity = (next_pitch - previous_pitch) / denominator;
+    if (!std::isfinite(reference.samples[i].yaw) ||
+        !std::isfinite(reference.samples[i].pitch) ||
+        !std::isfinite(reference.samples[i].yaw_velocity) ||
+        !std::isfinite(reference.samples[i].pitch_velocity) ||
+        (i > 0 && (std::abs(reference.samples[i].yaw - reference.samples[i - 1].yaw) > M_PI / 2.0 ||
+                   std::abs(reference.samples[i].pitch - reference.samples[i - 1].pitch) > M_PI / 2.0))) {
+      reference.selection_discontinuous = true;
+    }
   }
   reference.safe = reference.safe && !reference.selection_discontinuous;
   return true;
@@ -342,6 +355,8 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
   double command_pitch_velocity = 0.0;
   double command_yaw_acceleration = 0.0;
   double command_pitch_acceleration = 0.0;
+  double command_yaw_jerk = 0.0;
+  double command_pitch_jerk = 0.0;
   bool mpc_valid = false;
   bool mpc_safe = !mpc_enabled_;
   if (mpc_enabled_) {
@@ -385,10 +400,33 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
         command_pitch = pitch_command.position;
         command_pitch_velocity = pitch_command.velocity;
         command_pitch_acceleration = pitch_command.acceleration;
+        command_yaw_jerk = mpc_result.yaw.control;
+        command_pitch_jerk = mpc_result.pitch.control;
       } else {
         mpc_valid = false;
       }
     }
+  }
+
+  const bool finite_command = std::isfinite(command_yaw) && std::isfinite(command_pitch) &&
+                              std::isfinite(command_yaw_velocity) &&
+                              std::isfinite(command_pitch_velocity) &&
+                              std::isfinite(command_yaw_acceleration) &&
+                              std::isfinite(command_pitch_acceleration) &&
+                              std::isfinite(command_yaw_jerk) &&
+                              std::isfinite(command_pitch_jerk);
+  if (!finite_command) {
+    command_yaw = std::isfinite(yaw) ? yaw : rpy[2];
+    command_pitch = std::isfinite(pitch) ? pitch : rpy[1];
+    command_yaw_velocity = 0.0;
+    command_pitch_velocity = 0.0;
+    command_yaw_acceleration = 0.0;
+    command_pitch_acceleration = 0.0;
+    command_yaw_jerk = 0.0;
+    command_pitch_jerk = 0.0;
+    mpc_valid = false;
+    mpc_safe = false;
+    planning_safe = false;
   }
 
   rm_interfaces::msg::GimbalCmd gimbal_cmd;
@@ -402,6 +440,8 @@ rm_interfaces::msg::GimbalCmd Solver::solve(const rm_interfaces::msg::Target &ta
   gimbal_cmd.yaw_acceleration = command_yaw_acceleration * 180.0 / M_PI;
   gimbal_cmd.pitch_velocity = command_pitch_velocity * 180.0 / M_PI;
   gimbal_cmd.pitch_acceleration = command_pitch_acceleration * 180.0 / M_PI;
+  gimbal_cmd.yaw_jerk = command_yaw_jerk * 180.0 / M_PI;
+  gimbal_cmd.pitch_jerk = command_pitch_jerk * 180.0 / M_PI;
   gimbal_cmd.mpc_valid = mpc_valid;
   gimbal_cmd.fire_advice = planning_safe && mpc_safe && isOnTarget(rpy[2],
                                                                     rpy[1],
