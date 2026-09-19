@@ -3,7 +3,7 @@
   "phase": "phase_3_protocol_receiver_simulation",
   "updated_at": "2026-09-20",
   "baseline_commit": "109d96f",
-  "commit": "2b5ecaf",
+  "commit": "ab0adc2",
   "completed": [
     "added GimbalCmd control_mode, command_sequence, and command_dt",
     "timestamped commands with current_time and monotonic upper-level sequence",
