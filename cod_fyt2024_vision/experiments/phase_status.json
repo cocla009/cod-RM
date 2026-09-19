@@ -1,0 +1,20 @@
+{
+  "algorithm_phase_complete": true,
+  "completed_tasks": [
+    "ALG-1",
+    "ALG-2"
+  ],
+  "phase": "phase_6_parameter_optimization",
+  "next_task_id": "FINAL",
+  "next_trial": 67,
+  "valid_candidates": 30,
+  "no_improvement": 30,
+  "best_score": 10.34835263667545,
+  "best_candidate": "experiments/best_armor_solver_params.yaml",
+  "commit": "2209898",
+  "baseline_yaml_sha256": "8f56e8cdc927b10c7b224d6b2a14d5ee4b489078f58f024aa5ccb481af914dd1",
+  "validator_sha256": "b399b1710ca17bc7412f070ecd83e7fe3b4bcc50ec78740bb0fdc1c241468ca3",
+  "exit": true,
+  "exit_reason": "stop_condition:max_candidates_or_30_no_improvement",
+  "updated_at": "2026-09-20T00:46:48+08:00"
+}
