@@ -1,16 +1,19 @@
 {
   "task": "armor_solver_mpc_interface_sync",
-  "phase": "phase_2_versioned_jerk_protocol",
+  "phase": "phase_3_protocol_receiver_simulation",
   "updated_at": "2026-09-20",
   "baseline_commit": "109d96f",
-  "commit": "fb58309",
+  "commit": "2b5ecaf",
   "completed": [
     "added GimbalCmd control_mode, command_sequence, and command_dt",
     "timestamped commands with current_time and monotonic upper-level sequence",
     "added finite-value and mode/dt contract validation with safe position fallback",
     "defined and tested versioned 32-byte jerk packet",
     "wired versioned jerk packet into default, infantry, and sentry protocols",
-    "preserved legacy 16-byte position packet layout"
+    "preserved legacy 16-byte position packet layout",
+    "added ROS-free lower receiver for legacy and versioned frames",
+    "added sequence freshness and wraparound validation",
+    "added protocol-to-jerk actuator simulation test"
   ],
   "tests": [
     "gimbal command contract pure C++ test with generated-message-compatible stub: pass",
@@ -21,7 +24,9 @@
     "colcon build with system Python and workspace overlay: pass",
     "armor_solver ctest: 12/12 pass",
     "rm_serial_driver ctest: 5/5 pass",
-    "ros2 interface show rm_interfaces/msg/GimbalCmd: pass"
+    "ros2 interface show rm_interfaces/msg/GimbalCmd: pass",
+    "rm_serial_driver ctest after receiver integration: 6/6 pass",
+    "receiver pure C++ and ASAN/UBSAN tests: pass"
   ],
   "environment_limits": [
     "Conda Python was missing em; fixed by AMENT_PYTHON_EXECUTABLE=/usr/bin/python3",

@@ -59,6 +59,10 @@ if(BUILD_TESTING)
   add_executable(test_gimbal_packet_v2 test/test_gimbal_packet_v2.cpp)
   target_include_directories(test_gimbal_packet_v2 PRIVATE include)
   add_test(NAME gimbal_packet_v2 COMMAND test_gimbal_packet_v2)
+
+  add_executable(test_gimbal_command_receiver test/test_gimbal_command_receiver.cpp)
+  target_include_directories(test_gimbal_command_receiver PRIVATE include)
+  add_test(NAME gimbal_command_receiver COMMAND test_gimbal_command_receiver)
 endif()
 
 #############

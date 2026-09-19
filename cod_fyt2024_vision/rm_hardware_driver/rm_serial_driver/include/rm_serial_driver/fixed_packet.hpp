@@ -38,8 +38,12 @@ class FixedPacket {
   }
 
  public:
-  // 清除缓存, date_bytes和check_byte都用0填充
-  void clear() { memset(buffer_ + 1, 0, capacity - 2); }
+  // 清除缓存并恢复帧头、帧尾, data_bytes和check_byte用0填充
+  void clear() {
+    memset(buffer_, 0, capacity);
+    buffer_[0] = 0xff;
+    buffer_[capacity - 1] = 0x0d;
+  }
   // 设置flag
   void setCheckByte(uint8_t check_byte) {
     buffer_[capacity - 2] = check_byte;
