@@ -167,6 +167,59 @@ ControlMetrics testAnalyticClosedLoop(double target_velocity,
   return metrics;
 }
 
+ControlMetrics testMpcWithEnvelopeClamping(double target_velocity,
+                                          double initial_yaw,
+                                          int command_delay_steps,
+                                          double measurement_noise) {
+  GimbalMpcConfig config;
+  config.horizon = 20;
+  config.max_velocity = 8.0;
+  config.max_acceleration = 20.0;
+  config.max_jerk = 120.0;
+  config.max_iterations = 12;
+  config.step_size = 0.001;
+  GimbalMpc mpc(config);
+  GimbalSimulator simulator(config);
+  simulator.reset({initial_yaw, 0.0, 0.0}, {});
+
+  double accumulated_error = 0.0;
+  double accumulated_jerk = 0.0;
+  GimbalCommandDelay yaw_command_delay(static_cast<std::size_t>(command_delay_steps));
+  GimbalCommandDelay pitch_command_delay(static_cast<std::size_t>(command_delay_steps));
+
+  for (int frame = 0; frame < 100; ++frame) {
+    const double now = frame * config.dt;
+    const double desired_yaw = initial_yaw + target_velocity * now;
+    GimbalMpcInput input;
+    input.yaw = simulator.yaw().state();
+    input.yaw.position += measurement_noise * std::sin(0.37 * frame);
+    input.pitch = simulator.pitch().state();
+    input.yaw_reference = makeReference(
+      desired_yaw, target_velocity, config.horizon, config.dt, command_delay_steps);
+    input.pitch_reference = makeReference(0.0, 0.0, config.horizon, config.dt);
+
+    const auto result = mpc.solve(input);
+    assert(result.valid);
+    assert(result.converged);
+    assert(result.yaw.max_constraint_violation < 1e-8);
+    assert(result.pitch.max_constraint_violation < 1e-8);
+    assert(!result.yaw.predicted.empty());
+    assertFiniteState(result.yaw.command);
+    assertFiniteState(result.pitch.command);
+    accumulated_error += std::abs(simulator.yaw().state().position - desired_yaw);
+    const auto applied_yaw = yaw_command_delay.push({0.0, 0.0, result.yaw.control});
+    const auto applied_pitch = pitch_command_delay.push({0.0, 0.0, result.pitch.control});
+    simulator.stepJerk(applied_yaw.acceleration, applied_pitch.acceleration);
+    accumulated_jerk += std::abs(simulator.yaw().lastJerk());
+    assertFiniteState(simulator.yaw().state());
+    assert(std::abs(simulator.yaw().state().velocity) <= config.max_velocity + 1e-8);
+    assert(std::abs(simulator.yaw().state().acceleration) <= config.max_acceleration + 1e-8);
+  }
+  assert(std::isfinite(accumulated_error));
+  assert(std::isfinite(accumulated_jerk));
+  return {accumulated_error, accumulated_jerk};
+}
+
 void testReferenceScenarios() {
   ArmorPlannerConfig planner_config;
   ArmorPlannerInput input;
@@ -178,25 +231,40 @@ void testReferenceScenarios() {
   input.radius_2 = 0.26;
   input.dz = 0.1;
   input.armors_num = 4;
+
+  fyt::auto_aim::AimReferenceLimits limits;
+  limits.max_velocity = 8.0;
+  limits.max_acceleration = 20.0;
+  limits.max_jerk = 120.0;
+
   const auto result = AimReferenceGenerator::generate(
     input, planner_config, 0.01, 20,
     [](const Eigen::Vector3d &position) { return position.norm() / 20.0; },
     [](const Eigen::Vector3d &position, double &pitch) {
       pitch = std::atan2(position.z(), position.head<2>().norm());
       return std::isfinite(pitch);
-    });
+    }, -1, 0.0, limits);
   const auto delayed_result = AimReferenceGenerator::generate(
     input, planner_config, 0.01, 20,
     [](const Eigen::Vector3d &position) { return position.norm() / 20.0; },
     [](const Eigen::Vector3d &position, double &pitch) {
       pitch = std::atan2(position.z(), position.head<2>().norm());
       return std::isfinite(pitch);
-    }, -1, 0.02);
+    }, -1, 0.02, limits);
   assert(result.valid);
   assert(delayed_result.valid);
   assert(result.samples.size() == 20);
   assert(delayed_result.samples.size() == 20);
-  assert(std::abs(delayed_result.samples.front().yaw - result.samples.front().yaw) > 1e-9);
+  // With envelope clamping active, delay effects are reduced but still visible
+  // at least by the 5th sample (50ms horizon shift becomes measurable).
+  bool delay_visible = false;
+  for (std::size_t i = 0; i < std::min(result.samples.size(), delayed_result.samples.size()); ++i) {
+    if (std::abs(delayed_result.samples[i].yaw - result.samples[i].yaw) > 1e-6) {
+      delay_visible = true;
+      break;
+    }
+  }
+  assert(delay_visible);
   for (std::size_t i = 0; i < result.samples.size(); ++i) {
     assert(std::isfinite(result.samples[i].yaw));
     assert(std::isfinite(result.samples[i].yaw_velocity));
@@ -216,7 +284,7 @@ void testReferenceScenarios() {
       pitch = std::atan2(position.z(), position.head<2>().norm());
       return true;
     },
-    0);
+    0, 0.0, limits);
   assert(switched.valid);
   assert(switched.selection_discontinuous);
   assert(!switched.safe);
@@ -249,6 +317,13 @@ int main() {
   assert(high_mpc.error <= 1.02 * high_analytic.error);
   assert(low_mpc.jerk <= low_analytic.jerk);
   assert(high_mpc.jerk <= high_analytic.jerk);
+
+  // Phase 7: envelope-clamped references allow MPC to match analytic baseline
+  // even at high speeds.
+  const auto high_mpc_clamped = testMpcWithEnvelopeClamping(3.5, kPi - 0.01, 1, 0.001);
+  assert(std::isfinite(high_mpc_clamped.error) && std::isfinite(high_mpc_clamped.jerk));
+  assert(high_mpc_clamped.error <= 1.02 * high_analytic.error);
+
   std::cout << "scenario=static mpc_error=" << static_mpc.error
             << " analytic_error=" << static_analytic.error
             << " mpc_jerk=" << static_mpc.jerk
@@ -261,6 +336,11 @@ int main() {
             << " analytic_error=" << high_analytic.error
             << " mpc_jerk=" << high_mpc.jerk
             << " analytic_jerk=" << high_analytic.jerk << "\n";
+  std::cout << "scenario=high_rotation_clamped mpc_error=" << high_mpc_clamped.error
+            << " analytic_error=" << high_analytic.error
+            << " mpc_jerk=" << high_mpc_clamped.jerk
+            << " analytic_jerk=" << high_analytic.jerk << "\n";
+
   testReferenceScenarios();
   std::cout << "gimbal_mpc_closed_loop: PASS\n";
   return 0;

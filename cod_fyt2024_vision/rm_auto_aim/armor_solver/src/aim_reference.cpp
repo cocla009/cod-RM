@@ -14,6 +14,78 @@ bool finiteSample(const AimReferenceSample &sample) noexcept {
          std::isfinite(sample.yaw_velocity) && std::isfinite(sample.pitch_velocity) &&
          std::isfinite(sample.yaw_acceleration) && std::isfinite(sample.pitch_acceleration);
 }
+
+// Clamp one derivative into [-limit, limit] and report how far it overshot.
+// A non-positive limit leaves the value untouched.
+double clampWithExcess(double &value, const double limit, double &max_excess) noexcept {
+  if (!(limit > 0.0) || !std::isfinite(value)) return value;
+  const double magnitude = std::abs(value);
+  if (magnitude > limit) {
+    max_excess = std::max(max_excess, magnitude - limit);
+    value = std::copysign(limit, value);
+  }
+  return value;
+}
+
+// Project the yaw/pitch derivative chain of a generated reference into the
+// gimbal envelope. Velocity and acceleration are bounded directly; jerk is
+// bounded by limiting how fast acceleration may change between samples.
+// Positions are then re-integrated from the clamped velocities so the caller
+// never sees a position series that disagrees with its own derivatives.
+void applyLimits(std::vector<AimReferenceSample> &samples,
+                 const AimReferenceLimits &limits,
+                 const double dt,
+                 const double initial_yaw,
+                 const double initial_pitch,
+                 bool &exceeded,
+                 double &max_excess) noexcept {
+  if (samples.empty() || !limits.active()) return;
+
+  double excess = 0.0;
+  for (auto &sample : samples) {
+    clampWithExcess(sample.yaw_velocity, limits.max_velocity, excess);
+    clampWithExcess(sample.pitch_velocity, limits.max_velocity, excess);
+    clampWithExcess(sample.yaw_acceleration, limits.max_acceleration, excess);
+    clampWithExcess(sample.pitch_acceleration, limits.max_acceleration, excess);
+  }
+
+  if (limits.max_jerk > 0.0) {
+    const double max_step = limits.max_jerk * dt;
+    double previous_yaw_acceleration = samples.front().yaw_acceleration;
+    double previous_pitch_acceleration = samples.front().pitch_acceleration;
+    for (std::size_t i = 1; i < samples.size(); ++i) {
+      auto &sample = samples[i];
+      const double yaw_step = sample.yaw_acceleration - previous_yaw_acceleration;
+      if (std::abs(yaw_step) > max_step) {
+        excess = std::max(excess, std::abs(yaw_step) - max_step);
+        sample.yaw_acceleration =
+          previous_yaw_acceleration + std::copysign(max_step, yaw_step);
+      }
+      const double pitch_step = sample.pitch_acceleration - previous_pitch_acceleration;
+      if (std::abs(pitch_step) > max_step) {
+        excess = std::max(excess, std::abs(pitch_step) - max_step);
+        sample.pitch_acceleration =
+          previous_pitch_acceleration + std::copysign(max_step, pitch_step);
+      }
+      previous_yaw_acceleration = sample.yaw_acceleration;
+      previous_pitch_acceleration = sample.pitch_acceleration;
+    }
+  }
+
+  double yaw = initial_yaw;
+  double pitch = initial_pitch;
+  for (auto &sample : samples) {
+    yaw += sample.yaw_velocity * dt;
+    pitch += sample.pitch_velocity * dt;
+    sample.yaw = yaw;
+    sample.pitch = pitch;
+  }
+
+  if (excess > 0.0) {
+    exceeded = true;
+    max_excess = std::max(max_excess, excess);
+  }
+}
 }
 
 double AimReferenceGenerator::unwrapNear(const double angle, const double reference) noexcept {
@@ -29,7 +101,8 @@ AimReferenceResult AimReferenceGenerator::generate(
   const ArmorTrajectoryPlanner::FlightTimeFunction &flight_time,
   const PitchFunction &pitch,
   const int previous_selected_index,
-  const double start_delay) noexcept {
+  const double start_delay,
+  const AimReferenceLimits &limits) noexcept {
   AimReferenceResult result;
   if (!std::isfinite(dt) || dt <= 0.0 || horizon < 2 || !pitch ||
       !std::isfinite(start_delay) || start_delay < 0.0) {
@@ -114,9 +187,25 @@ AimReferenceResult AimReferenceGenerator::generate(
     }
   }
 
+  // The first sample's pitch is the closest available stand-in for the current
+  // pitch, which the planner input does not carry.
+  const double initial_pitch = result.samples.front().pitch -
+    result.samples.front().pitch_velocity * dt;
+  applyLimits(result.samples, limits, dt, initial_yaw, initial_pitch,
+              result.exceeded_limits, result.max_limit_excess);
+  for (const auto &sample : result.samples) {
+    if (!finiteSample(sample)) {
+      result.reason = "nonfinite_reference";
+      return result;
+    }
+  }
+
   result.valid = true;
-  result.safe = !result.selection_discontinuous;
-  result.reason = result.safe ? "ok" : "selection_discontinuity";
+  // A clamped reference is trackable but no longer aims at the armour, so it
+  // must not be treated as a firing solution.
+  result.safe = !result.selection_discontinuous && !result.exceeded_limits;
+  result.reason = result.selection_discontinuous ? "selection_discontinuity"
+    : (result.exceeded_limits ? "reference_exceeds_gimbal_limits" : "ok");
   return result;
 }
 
