@@ -17,350 +17,223 @@
 // limitations under the License.
 
 #include "armor_detector/armor_detector.hpp"
-// std
+
 #include <algorithm>
 #include <cmath>
-#include <execution>
-#include <vector>
-// OpenCV
-#include <opencv2/core.hpp>
-#include <opencv2/core/base.hpp>
-#include <opencv2/core/mat.hpp>
-#include <opencv2/core/types.hpp>
-#include <opencv2/highgui.hpp>
+#include <filesystem>
+#include <stdexcept>
+#include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
-// project
-#include "armor_detector/types.hpp"
-#include "rm_utils/common.hpp"
-#include "rm_utils/logger/log.hpp"
+#include <openvino/c/openvino.h>
 
 namespace fyt::auto_aim {
-Detector::Detector(const int &bin_thres,
-                   const EnemyColor &color,
-                   const LightParams &l,
-                   const ArmorParams &a)
-: binary_thres(bin_thres), detect_color(color), light_params(l), armor_params(a) {}
-
-std::vector<Armor> Detector::detect(const cv::Mat &input) noexcept {
-  // 1. Preprocess the image
-  binary_img = preprocessImage(input);
-  // 2. Find lights
-  lights_ = findLights(input, binary_img);
-  // 3. Match lights to armors
-  armors_ = matchLights(lights_);
-
-  if (!armors_.empty() && classifier != nullptr) {
-    // Parallel processing
-    std::for_each(
-      std::execution::par, armors_.begin(), armors_.end(), [this, &input](Armor &armor) {
-        // 4. Extract the number image
-        armor.number_img = classifier->extractNumber(input, armor);
-        // 5. Do classification
-        classifier->classify(input, armor);
-        // 6. Correct the corners of the armor
-        if (corner_corrector != nullptr) {
-          corner_corrector->correctCorners(armor, gray_img_);
-        }
-      });
-
-    // 7. Erase the armors with ignore classes
-    classifier->eraseIgnoreClasses(armors_);
+namespace {
+constexpr int kInputSize = 640;
+constexpr int kRows = 25200;
+constexpr int kColumns = 22;
+void check(ov_status_e status, const char *operation) {
+  if (status != OK) {
+    const char *detail = ov_get_last_err_msg();
+    throw std::runtime_error(std::string("OpenVINO ") + operation + ": " +
+                             (detail ? detail : ov_get_error_info(status)));
   }
+}
+void checkPort(ov_output_const_port_t *raw_port, const std::vector<int64_t> &expected,
+               ov_element_type_e expected_type) {
+  std::unique_ptr<ov_output_const_port_t, decltype(&ov_output_const_port_free)>
+    port(raw_port, ov_output_const_port_free);
+  ov_shape_t shape{};
+  check(ov_const_port_get_shape(port.get(), &shape), "read static model shape");
+  const bool valid = shape.rank == static_cast<int64_t>(expected.size()) &&
+    std::equal(expected.begin(), expected.end(), shape.dims);
+  ov_shape_free(&shape);
+  ov_element_type_e type;
+  check(ov_port_get_element_type(port.get(), &type), "read model type");
+  if (!valid || type != expected_type) {
+    throw std::runtime_error("Expected RobotPilots 0526 float16 [1,3,640,640] -> "
+                             "float32 [1,25200,22]; generic YOLO weights are incompatible");
+  }
+}
+}  // namespace
 
-  return armors_;
+// The C API keeps the ROS/OpenCV C++ ABI independent of the OpenVINO distribution.
+struct Detector::Impl {
+  ov_core_t *core = nullptr;
+  ov_model_t *model = nullptr;
+  ov_compiled_model_t *compiled = nullptr;
+  ov_infer_request_t *request = nullptr;
+  ov_tensor_t *input = nullptr;
+  ov_tensor_t *output = nullptr;
+  ~Impl() {
+    if (output) ov_tensor_free(output);
+    if (input) ov_tensor_free(input);
+    if (request) ov_infer_request_free(request);
+    if (compiled) ov_compiled_model_free(compiled);
+    if (model) ov_model_free(model);
+    if (core) ov_core_free(core);
+  }
+  void init(const std::string &path, const std::string &device) {
+    check(ov_core_create(&core), "create core");
+    check(ov_core_read_model(core, path.c_str(), nullptr, &model), "read model");
+    size_t inputs = 0, outputs = 0;
+    check(ov_model_inputs_size(model, &inputs), "input count");
+    check(ov_model_outputs_size(model, &outputs), "output count");
+    if (inputs != 1 || outputs != 1) throw std::runtime_error("0526 requires one input/output");
+    ov_output_const_port_t *port = nullptr;
+    check(ov_model_const_input(model, &port), "input port");
+    checkPort(port, {1, 3, kInputSize, kInputSize}, F16);
+    check(ov_model_const_output(model, &port), "output port");
+    checkPort(port, {1, kRows, kColumns}, F32);
+    // The original ONNX consumes FP16. Expose an FP32 input to the C++ image
+    // loop and let OpenVINO insert the conversion in the compiled graph.
+    using Preprocessor = std::unique_ptr<ov_preprocess_prepostprocessor_t,
+                                         decltype(&ov_preprocess_prepostprocessor_free)>;
+    using InputInfo = std::unique_ptr<ov_preprocess_input_info_t,
+                                      decltype(&ov_preprocess_input_info_free)>;
+    using TensorInfo = std::unique_ptr<ov_preprocess_input_tensor_info_t,
+                                       decltype(&ov_preprocess_input_tensor_info_free)>;
+    ov_preprocess_prepostprocessor_t *preprocessor_raw = nullptr;
+    check(ov_preprocess_prepostprocessor_create(model, &preprocessor_raw), "create preprocessing");
+    Preprocessor preprocessor(preprocessor_raw, ov_preprocess_prepostprocessor_free);
+    ov_preprocess_input_info_t *input_info_raw = nullptr;
+    check(ov_preprocess_prepostprocessor_get_input_info(preprocessor.get(), &input_info_raw),
+          "get input preprocessing");
+    InputInfo input_info(input_info_raw, ov_preprocess_input_info_free);
+    ov_preprocess_input_tensor_info_t *tensor_info_raw = nullptr;
+    check(ov_preprocess_input_info_get_tensor_info(input_info.get(), &tensor_info_raw),
+          "get input tensor information");
+    TensorInfo tensor_info(tensor_info_raw, ov_preprocess_input_tensor_info_free);
+    check(ov_preprocess_input_tensor_info_set_element_type(tensor_info.get(), F32),
+          "set float32 input tensor");
+    ov_model_t *preprocessed_model = nullptr;
+    check(ov_preprocess_prepostprocessor_build(preprocessor.get(), &preprocessed_model),
+          "build float32 to float16 preprocessing");
+    ov_model_free(model);
+    model = preprocessed_model;
+    check(ov_core_compile_model(core, model, device.c_str(), 2, &compiled,
+                               ov_property_key_hint_performance_mode, "LATENCY"), "compile model");
+    check(ov_compiled_model_create_infer_request(compiled, &request), "create request");
+    check(ov_infer_request_get_input_tensor(request, &input), "input tensor");
+    check(ov_infer_request_get_output_tensor(request, &output), "output tensor");
+    ov_element_type_e input_type;
+    check(ov_tensor_get_element_type(input, &input_type), "check compiled input type");
+    if (input_type != F32) throw std::runtime_error("Preprocessed input is not float32");
+  }
+};
+
+Detector::Detector(const std::string &path, const std::string &device, Params settings,
+                   EnemyColor color)
+: params(settings), detect_color(color), impl_(std::make_unique<Impl>()) {
+  validateParams(params);
+  if (device.empty()) throw std::invalid_argument("nn.device must not be empty");
+  if (color != EnemyColor::RED && color != EnemyColor::BLUE) {
+    throw std::invalid_argument("detect_color must be 0 (red) or 1 (blue)");
+  }
+  if (!std::filesystem::is_regular_file(path)) {
+    throw std::runtime_error("Missing 0526 model: " + path +
+                             "; run armor_detector/model/fetch_model.py before building");
+  }
+  impl_->init(path, device);
+}
+Detector::~Detector() = default;
+
+void Detector::validateParams(const Params &p) {
+  if (!std::isfinite(p.confidence_threshold) || p.confidence_threshold <= 0.0 ||
+      p.confidence_threshold >= 1.0 || !std::isfinite(p.nms_threshold) ||
+      p.nms_threshold <= 0.0 || p.nms_threshold >= 1.0) {
+    throw std::invalid_argument("NN confidence/NMS thresholds must be in (0,1)");
+  }
 }
 
-cv::Mat Detector::preprocessImage(const cv::Mat &rgb_img) noexcept {
-  cv::cvtColor(rgb_img, gray_img_, cv::COLOR_RGB2GRAY);
-
-  cv::Mat binary_img;
-  cv::threshold(gray_img_, binary_img, binary_thres, 255, cv::THRESH_BINARY);
-
-  return binary_img;
-}
-
-std::vector<Light> Detector::findLights(const cv::Mat &rgb_img,
-                                        const cv::Mat &binary_img) noexcept {
-  using std::vector;
-  vector<vector<cv::Point>> contours;
-  vector<cv::Vec4i> hierarchy;
-  cv::findContours(binary_img, contours, hierarchy, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-  vector<Light> lights;
-  this->debug_lights.data.clear();
-
-  for (const auto &contour : contours) {
-    //-----
-    if (1)  //写个开关
-    { FYT_INFO("armor_detector", "最小二乘法!");
-      auto b_rect = cv::boundingRect(contour);
-      auto r_rect = cv::minAreaRect(contour);
-      cv::Mat mask = cv::Mat::zeros(b_rect.size(), CV_8UC1);
-      std::vector<cv::Point> mask_contour;
-      for (const auto &p : contour) {
-        mask_contour.emplace_back(p - cv::Point(b_rect.x, b_rect.y));
-      }
-      cv::fillPoly(mask, {mask_contour}, 255);
-      std::vector<cv::Point> points;
-      cv::findNonZero(mask, points);
-      bool is_fill_rotated_rect =
-        points.size() / (r_rect.size.width * r_rect.size.height) > l.min_fill_ratio;
-      cv::Vec4f return_param;
-      cv::fitLine(points, return_param, cv::DIST_L2, 0, 0.01, 0.01);
-      cv::Point2f top, bottom;
-      double angle_k;
-      if (int(return_param[0] * 100) == 100 || int(return_param[1] * 100) == 0) {
-        top = cv::Point2f(b_rect.x + b_rect.width / 2, b_rect.y);
-        bottom = cv::Point2f(b_rect.x + b_rect.width / 2, b_rect.y + b_rect.height);
-        angle_k = 0;
-      } else {
-        auto k = return_param[1] / return_param[0];
-        auto b = (return_param[3] + b_rect.y) - k * (return_param[2] + b_rect.x);
-        top = cv::Point2f((b_rect.y - b) / k, b_rect.y);
-        bottom = cv::Point2f((b_rect.y + b_rect.height - b) / k, b_rect.y + b_rect.height);
-        angle_k = std::atan(k) / CV_PI * 180 - 90;
-        if (angle_k > 90) {
-          angle_k = 180 - angle_k;
-        }
-      }
-      auto light2 = Light2(b_rect, top, bottom, points.size(), angle_k);
-
-      if (isLight2(light2) && is_fill_rotated_rect) {
-        auto rect = light2;
-        if (  // Avoid assertion failed
-          0 <= rect.x && 0 <= rect.width && rect.x + rect.width <= rgb_img.cols && 0 <= rect.y &&
-          0 <= rect.height && rect.y + rect.height <= rgb_img.rows) {
-          int sum_r = 0, sum_b = 0;
-          auto roi = rgb_img(rect);
-          // Iterate through the ROI
-          for (int i = 0; i < roi.rows; i++) {
-            for (int j = 0; j < roi.cols; j++) {
-              if (cv::pointPolygonTest(contour, cv::Point2f(j + rect.x, i + rect.y), false) >= 0) {
-                // if point is inside contour
-                sum_r += roi.at<cv::Vec3b>(i, j)[0];
-                sum_b += roi.at<cv::Vec3b>(i, j)[2];
-              }
-            }
-          }
-          // Sum of red pixels > sum of blue pixels ?
-          auto light=Light(contour);
-          light.color = sum_r > sum_b ? EnemyColor::RED : EnemyColor::BLUE;
-          lights.emplace_back(light);
-        }
-      }
-
-    } else {
-      
-      if (contour.size() < 6) continue;
-      auto light = Light(contour);
-
-      if (isLight(light)) {
-        int sum_r = 0, sum_b = 0;
-        for (const auto &point : contour) {
-          sum_r += rgb_img.at<cv::Vec3b>(point.y, point.x)[0];
-          sum_b += rgb_img.at<cv::Vec3b>(point.y, point.x)[2];
-        }
-        if (std::abs(sum_r - sum_b) / static_cast<int>(contour.size()) >
-            light_params.color_diff_thresh) {
-          light.color = sum_r > sum_b ? EnemyColor::RED : EnemyColor::BLUE;
-        }
-        lights.emplace_back(light);
-      }
+std::vector<Armor> Detector::detect(const cv::Mat &image) {
+  if (image.empty()) return {};
+  if (image.type() != CV_8UC3) throw std::invalid_argument("Detector requires RGB uint8 image");
+  const double scale = std::min(double(kInputSize) / image.cols, double(kInputSize) / image.rows);
+  const cv::Size resized(std::max(1, int(image.cols * scale)),
+                         std::max(1, int(image.rows * scale)));
+  cv::Mat padded(kInputSize, kInputSize, CV_8UC3, cv::Scalar(0, 0, 0));
+  cv::resize(image, padded(cv::Rect({0, 0}, resized)), resized);
+  // RGB is already supplied by cv_bridge. Black padding is on bottom/right only.
+  void *input_data = nullptr;
+  check(ov_tensor_data(impl_->input, &input_data), "map input");
+  auto *data = static_cast<float *>(input_data);
+  constexpr int plane = kInputSize * kInputSize;
+  for (int y = 0; y < kInputSize; ++y) {
+    const auto *row = padded.ptr<cv::Vec3b>(y);
+    for (int x = 0; x < kInputSize; ++x) {
+      for (int c = 0; c < 3; ++c) data[c * plane + y * kInputSize + x] = row[x][c] / 255.0F;
     }
   }
-  std::sort(lights.begin(), lights.end(), [](const Light &l1, const Light &l2) {
-    return l1.center.x < l2.center.x;
-  });
-  return lights;
+  check(ov_infer_request_infer(impl_->request), "infer");
+  void *output_data = nullptr;
+  check(ov_tensor_data(impl_->output, &output_data), "map output");
+  return decode(cv::Mat(kRows, kColumns, CV_32F, output_data), image.size(), resized,
+                params, detect_color);
 }
 
-bool Detector::isLight(const Light &light) noexcept {
-  // The ratio of light (short side / long side)
-  float ratio = light.width / light.length;
-  bool ratio_ok = light_params.min_ratio < ratio && ratio < light_params.max_ratio;
-
-  bool angle_ok = light.tilt_angle < light_params.max_angle;
-
-  bool is_light = ratio_ok && angle_ok;
-
-  // Fill in debug information
-  rm_interfaces::msg::DebugLight light_data;
-  light_data.center_x = light.center.x;
-  light_data.ratio = ratio;
-  light_data.angle = light.tilt_angle;
-  light_data.is_light = is_light;
-  this->debug_lights.data.emplace_back(light_data);
-
-  return is_light;
-}
-
-//最小二乘法
-bool Detector::isLight2(const Light2 &light) noexcept {
-  // The ratio of light (short side / long side)
-  float ratio = light.width / light.length;
-  bool ratio_ok = light_params.min_ratio < ratio && ratio < light_params.max_ratio;
-
-  bool angle_ok = light.tilt_angle < light_params.max_angle;
-
-  bool is_light = ratio_ok && angle_ok;
-
-  // Fill in debug information
-  rm_interfaces::msg::DebugLight light_data;
-  light_data.center_x = light.center.x;
-  light_data.ratio = ratio;
-  light_data.angle = light.tilt_angle;
-  light_data.is_light = is_light;
-  this->debug_lights.data.emplace_back(light_data);
-
-  return is_light;
-}
-
-std::vector<Armor> Detector::matchLights(const std::vector<Light> &lights) noexcept {
-  std::vector<Armor> armors;
-  this->debug_armors.data.clear();
-  // Loop all the pairing of lights
-  for (auto light_1 = lights.begin(); light_1 != lights.end(); light_1++) {
-    if (light_1->color != detect_color) continue;
-    double max_iter_width = light_1->length * armor_params.max_large_center_distance;
-
-    for (auto light_2 = light_1 + 1; light_2 != lights.end(); light_2++) {
-      if (light_2->color != detect_color) continue;
-      if (containLight(light_1 - lights.begin(), light_2 - lights.begin(), lights)) {
-        continue;
-      }
-      if (light_2->center.x - light_1->center.x > max_iter_width) break;
-
-      auto type = isArmor(*light_1, *light_2);
-      if (type != ArmorType::INVALID) {
-        auto armor = Armor(*light_1, *light_2);
-        armor.type = type;
-        armors.emplace_back(armor);
-      }
+std::vector<Armor> Detector::decode(const cv::Mat &output, cv::Size image_size,
+                                    cv::Size resized, const Params &settings, EnemyColor color) {
+  validateParams(settings);
+  if (output.type() != CV_32F || output.cols != kColumns ||
+      image_size.width <= 0 || image_size.height <= 0 ||
+      resized.width <= 0 || resized.height <= 0 || resized.width > kInputSize ||
+      resized.height > kInputSize) throw std::invalid_argument("Invalid 0526 output/resize metadata");
+  if (color != EnemyColor::RED && color != EnemyColor::BLUE) {
+    throw std::invalid_argument("Detection color must be red or blue");
+  }
+  const float sx = float(image_size.width) / resized.width;
+  const float sy = float(image_size.height) / resized.height;
+  const std::array<std::string, 9> names{"sentry", "1", "2", "3", "4", "5", "outpost", "base", "base"};
+  std::vector<Armor> candidates;
+  std::vector<cv::Rect2d> boxes;
+  std::vector<float> scores;
+  for (int row = 0; row < output.rows; ++row) {
+    const float *v = output.ptr<float>(row);
+    if (!std::all_of(v, v + kColumns, [](float x) { return std::isfinite(x); })) continue;
+    const float score = v[8] >= 0 ? 1.0F / (1.0F + std::exp(-v[8]))
+                                  : std::exp(v[8]) / (1.0F + std::exp(v[8]));
+    if (score < settings.confidence_threshold) continue;
+    const int color_id = std::max_element(v + 9, v + 13) - (v + 9);
+    if (color_id != static_cast<int>(color)) continue;
+    const int number_id = std::max_element(v + 13, v + 22) - (v + 13);
+    Armor armor;
+    // Network TL,BL,BR,TR -> PnP BL,TL,TR,BR. Never sort by image x/y.
+    constexpr std::array<int, 4> order{1, 0, 3, 2};
+    bool inside = true;
+    for (int i = 0; i < 4; ++i) {
+      armor.corners[i] = {v[2 * order[i]] * sx, v[2 * order[i] + 1] * sy};
+      const auto &p = armor.corners[i];
+      inside = inside && p.x >= 0 && p.y >= 0 && p.x < image_size.width && p.y < image_size.height;
+      armor.center += p * 0.25F;
     }
-  }
-
-  return armors;
-}
-
-// Check if there is another light in the boundingRect formed by the 2 lights
-bool Detector::containLight(const int i, const int j, const std::vector<Light> &lights) noexcept {
-  const Light &light_1 = lights.at(i), light_2 = lights.at(j);
-  auto points = std::vector<cv::Point2f>{light_1.top, light_1.bottom, light_2.top, light_2.bottom};
-  auto bounding_rect = cv::boundingRect(points);
-  double avg_length = (light_1.length + light_2.length) / 2.0;
-  double avg_width = (light_1.width + light_2.width) / 2.0;
-  // Only check lights in between
-  for (int k = i + 1; k < j; k++) {
-    const Light &test_light = lights.at(k);
-
-    // 防止数字干扰
-    if (test_light.width > 2 * avg_width) {
-      continue;
+    if (!inside) continue;  // Clipping corner coordinates would corrupt the PnP measurement.
+    const auto points = armor.landmarks();
+    if (!cv::isContourConvex(points) || cv::contourArea(points, true) <= 1.0) continue;
+    const double height = std::max(cv::norm(points[0] - points[1]), cv::norm(points[2] - points[3]));
+    const double width = std::max(cv::norm(points[1] - points[2]), cv::norm(points[0] - points[3]));
+    if (height < 1.0 || width < 1.0) continue;
+    // Project rule: only armor 1 and base are large. Both network base labels
+    // (Bs and Bb) publish as "base" and use the project's large-board geometry.
+    const bool large = number_id == 1 || number_id == 7 || number_id == 8;
+    armor.type = large ? ArmorType::LARGE : ArmorType::SMALL;
+    armor.number = names[number_id];
+    armor.confidence = score;
+    float min_x = points[0].x, max_x = min_x, min_y = points[0].y, max_y = min_y;
+    for (const auto &p : points) {
+      min_x = std::min(min_x, p.x); max_x = std::max(max_x, p.x);
+      min_y = std::min(min_y, p.y); max_y = std::max(max_y, p.y);
     }
-    // 防止红点准星或弹丸干扰
-    if (test_light.length < 0.5 * avg_length) {
-      continue;
-    }
-
-    if (bounding_rect.contains(test_light.top) || bounding_rect.contains(test_light.bottom) ||
-        bounding_rect.contains(test_light.center)) {
-      return true;
-    }
+    boxes.emplace_back(min_x, min_y, max_x - min_x, max_y - min_y);
+    scores.push_back(score);
+    candidates.push_back(std::move(armor));
   }
-  return false;
+  std::vector<int> indices;
+  // Suppress duplicate predictions even when their number differs.
+  cv::dnn::NMSBoxes(boxes, scores, settings.confidence_threshold, settings.nms_threshold,
+                    indices, 1.0F, 128);
+  std::vector<Armor> result;
+  result.reserve(indices.size());
+  for (int index : indices) result.push_back(std::move(candidates[index]));
+  return result;
 }
-
-ArmorType Detector::isArmor(const Light &light_1, const Light &light_2) noexcept {
-  // Ratio of the length of 2 lights (short side / long side)
-  float light_length_ratio = light_1.length < light_2.length ? light_1.length / light_2.length
-                                                             : light_2.length / light_1.length;
-  bool light_ratio_ok = light_length_ratio > armor_params.min_light_ratio;
-
-  // Distance between the center of 2 lights (unit : light length)
-  float avg_light_length = (light_1.length + light_2.length) / 2;
-  float center_distance = cv::norm(light_1.center - light_2.center) / avg_light_length;
-  bool center_distance_ok = (armor_params.min_small_center_distance <= center_distance &&
-                             center_distance < armor_params.max_small_center_distance) ||
-                            (armor_params.min_large_center_distance <= center_distance &&
-                             center_distance < armor_params.max_large_center_distance);
-
-  // Angle of light center connection
-  cv::Point2f diff = light_1.center - light_2.center;
-  float angle = std::abs(std::atan(diff.y / diff.x)) / CV_PI * 180;
-  bool angle_ok = angle < armor_params.max_angle;
-
-  bool is_armor = light_ratio_ok && center_distance_ok && angle_ok;
-
-  // Judge armor type
-  ArmorType type;
-  if (is_armor) {
-    type = center_distance > armor_params.min_large_center_distance ? ArmorType::LARGE
-                                                                    : ArmorType::SMALL;
-  } else {
-    type = ArmorType::INVALID;
-  }
-
-  // Fill in debug information
-  rm_interfaces::msg::DebugArmor armor_data;
-  armor_data.type = armorTypeToString(type);
-  armor_data.center_x = (light_1.center.x + light_2.center.x) / 2;
-  armor_data.light_ratio = light_length_ratio;
-  armor_data.center_distance = center_distance;
-  armor_data.angle = angle;
-  this->debug_armors.data.emplace_back(armor_data);
-
-  return type;
-}
-
-cv::Mat Detector::getAllNumbersImage() const noexcept {
-  if (armors_.empty()) {
-    return cv::Mat(cv::Size(20, 28), CV_8UC1);
-  } else {
-    std::vector<cv::Mat> number_imgs;
-    number_imgs.reserve(armors_.size());
-    for (auto &armor : armors_) {
-      number_imgs.emplace_back(armor.number_img);
-    }
-    cv::Mat all_num_img;
-    cv::vconcat(number_imgs, all_num_img);
-    return all_num_img;
-  }
-}
-
-void Detector::drawResults(cv::Mat &img) const noexcept {
-  // Draw Lights
-
-  for (const auto &light : lights_) {
-    auto line_color =
-      light.color == EnemyColor::RED ? cv::Scalar(0, 255, 255) : cv::Scalar(255, 255, 0);
-    // cv::ellipse(img, light, line_color, 2);
-    cv::line(img, light.top, light.bottom, line_color, 1);
-  }
-
-  // Draw armors
-  for (const auto &armor : armors_) {
-    cv::line(img, armor.left_light.top, armor.right_light.bottom, cv::Scalar(0, 255, 0), 1);
-    cv::line(img, armor.left_light.bottom, armor.right_light.top, cv::Scalar(0, 255, 0), 1);
-
-    // cv::line(img, armor.left_light.top, armor.left_light.bottom,
-    // cv::Scalar(0, 255, 0), 1, cv::LINE_AA); cv::line(img,
-    // armor.right_light.bottom, armor.right_light.top, cv::Scalar(0, 255, 0),
-    // 1, cv::LINE_AA); cv::line(img, armor.left_light.top,
-    // armor.right_light.top, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
-    // cv::line(img, armor.right_light.bottom, armor.left_light.bottom,
-    // cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
-  }
-  // Show numbers and confidence
-  for (const auto &armor : armors_) {
-    std::string text = fmt::format("{} {}", armorTypeToString(armor.type), armor.classfication_result);
-    cv::putText(img,
-                text,
-                armor.left_light.top,
-                cv::FONT_HERSHEY_SIMPLEX,
-                0.8,
-                cv::Scalar(0, 255, 255),
-                2);
-  }
-}
-
 }  // namespace fyt::auto_aim

@@ -36,7 +36,7 @@ public:
   BaSolver(const std::array<double, 9> &camera_matrix, const std::vector<double> &dist_coeffs);
 
   // Solve the armor yaw and update the camera-to-armor rotation matrix.
-  bool solveBa(const Armor &armor, cv::Mat &rmat) noexcept;
+  bool solveBa(const Armor &armor, cv::Mat &rmat);
 
 private:
   double computeReprojError(const Eigen::Matrix3d &camera2imu,
@@ -47,6 +47,8 @@ private:
                             double yaw) const noexcept;
 
   CameraInternalK cam_internal_k_;
+  cv::Mat camera_matrix_;
+  cv::Mat dist_coeffs_;
 };
 
 }  // namespace fyt::auto_aim

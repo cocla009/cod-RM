@@ -59,6 +59,7 @@
   ```bash
   sudo apt install libfmt-dev
   ```
+- 装甲板识别使用 RobotPilots 0526 神经网络，需要 OpenVINO Runtime 2024.6 及模型权重。请先按 [armor_detector 部署说明](rm_auto_aim/armor_detector/README.md) 下载模型、配置 SDK 并构建。
 - 装甲板 yaw 优化使用 Eigen/OpenCV 的确定性重投影搜索，不再需要额外安装 G2O 或 Sophus。
 ### 3. 能量机关
 - OpenVINO库 (能量机关识别)

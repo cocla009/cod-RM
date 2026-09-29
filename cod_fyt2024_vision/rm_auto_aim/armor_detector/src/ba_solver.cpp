@@ -18,17 +18,20 @@
 
 #include <cmath>
 #include <limits>
+#include <opencv2/calib3d.hpp>
 
 #include "armor_detector/types.hpp"
 #include "rm_utils/math/utils.hpp"
 
 namespace fyt::auto_aim {
 
-BaSolver::BaSolver(const std::array<double, 9> &camera_matrix, const std::vector<double> &)
+BaSolver::BaSolver(const std::array<double, 9> &camera_matrix, const std::vector<double> &dist_coeffs)
 : cam_internal_k_{.fx = camera_matrix[0],
                   .fy = camera_matrix[4],
                   .cx = camera_matrix[2],
-                  .cy = camera_matrix[5]} {}
+                  .cy = camera_matrix[5]},
+  camera_matrix_(cv::Mat(3, 3, CV_64F, const_cast<double *>(camera_matrix.data())).clone()),
+  dist_coeffs_(cv::Mat(dist_coeffs, true)) {}
 
 double BaSolver::computeReprojError(const Eigen::Matrix3d &camera2imu,
                                     const Eigen::Vector3d &tvec,
@@ -60,21 +63,21 @@ double BaSolver::computeReprojError(const Eigen::Matrix3d &camera2imu,
   return error;
 }
 
-bool BaSolver::solveBa(const Armor &armor, cv::Mat &rmat) noexcept {
+bool BaSolver::solveBa(const Armor &armor, cv::Mat &rmat) {
   if (armor.tvec.empty() || armor.tvec.total() < 3) {
     return false;
   }
 
-  const auto landmarks = armor.landmarks();
-  const Eigen::Matrix3d camera2imu = armor.imu2camera.transpose();
+  // Search in undistorted pixel coordinates, matching the pinhole projection below.
+  std::vector<cv::Point2f> landmarks;
+  cv::undistortPoints(armor.landmarks(), landmarks, camera_matrix_, dist_coeffs_,
+                      cv::noArray(), camera_matrix_);
+  const Eigen::Matrix3d camera2imu = armor.camera_to_odom.transpose();
   const Eigen::Vector3d tvec(armor.tvec.at<double>(0),
                              armor.tvec.at<double>(1),
                              armor.tvec.at<double>(2));
-  const Eigen::Vector2d armor_size = armor.type == ArmorType::SMALL
-                                       ? Eigen::Vector2d(SMALL_ARMOR_WIDTH, SMALL_ARMOR_HEIGHT)
-                                       : Eigen::Vector2d(LARGE_ARMOR_WIDTH, LARGE_ARMOR_HEIGHT);
   const auto object_points =
-    Armor::buildObjectPoints<Eigen::Vector3d>(armor_size.x(), armor_size.y());
+    Armor::buildObjectPoints<Eigen::Vector3d>(armor.width, armor.height);
   const double pitch = armor.number == "outpost" ? -FIFTTEN_DEGREE_RAD : FIFTTEN_DEGREE_RAD;
 
   constexpr int kCoarseSteps = 360;
@@ -94,7 +97,8 @@ bool BaSolver::solveBa(const Armor &armor, cv::Mat &rmat) noexcept {
     }
   }
 
-  for (double yaw = best_yaw - kFineRange; yaw <= best_yaw + kFineRange; yaw += kFineStep) {
+  const double coarse_yaw = best_yaw;
+  for (double yaw = coarse_yaw - kFineRange; yaw <= coarse_yaw + kFineRange; yaw += kFineStep) {
     const double error =
       computeReprojError(camera2imu, tvec, landmarks, object_points, pitch, yaw);
     if (error < best_error) {
@@ -110,7 +114,7 @@ bool BaSolver::solveBa(const Armor &armor, cv::Mat &rmat) noexcept {
   const std::array<double, 3> optimized_euler{0.0, pitch, best_yaw};
   const Eigen::Matrix3d imu2armor =
     utils::eulerToMatrix(optimized_euler, utils::EulerOrder::XYZ);
-  const Eigen::Matrix3d rmat_optimized = armor.imu2camera.transpose() * imu2armor;
+  const Eigen::Matrix3d rmat_optimized = armor.camera_to_odom.transpose() * imu2armor;
   rmat = utils::eigenToCv(rmat_optimized);
   return true;
 }

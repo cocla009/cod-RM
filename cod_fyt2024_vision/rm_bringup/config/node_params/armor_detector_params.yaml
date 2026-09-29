@@ -1,24 +1,21 @@
 /**:
   ros__parameters:
-    debug: true
+    debug: false
     target_frame: odom
-    detect_color: 0
-    binary_thres: 90
+    detect_color: 0 # 初始敌方颜色：0 红，1 蓝；运行时通过 set_mode 服务切换
 
-    use_pca: true # 使用PCA算法矫正灯条的角点
-    use_ba: true # 使用全局粗到细重投影搜索优化装甲板Yaw角
-    pnp_solution_selection: true # 从多个PnP解中选择pitch轴最接近先验角度的解
+    nn.model_path: package://armor_detector/model/rp_0526.onnx
+    nn.device: CPU # 可改为 AUTO 或已安装驱动的 GPU
+    nn.confidence_threshold: 0.7 # sigmoid(objectness)，可动态修改
+    nn.nms_threshold: 0.4 # 可动态修改
 
-    light.min_ratio: 0.0001
-    light.max_ratio: 1.0
-    light.max_angle: 40.0
-    light.color_diff_thresh: 20
-    armor.min_light_ratio: 0.6
-    armor.min_small_center_distance: 0.8
-    armor.max_small_center_distance: 3.5
-    armor.min_large_center_distance: 3.5
-    armor.max_large_center_distance: 9.0
-    armor.max_angle: 35.0
+    max_frame_age: 0.2 # 秒，包含推理和位姿解算时间；超时发布空结果
+    max_reprojection_error: 5.0 # 四点重投影 RMSE 上限，单位像素
+    use_ba: true # 四点去畸变后进行 yaw 重投影搜索
+    pnp_solution_selection: true # 在有效 PnP 解中按俯仰先验选择
 
-    classifier_threshold: 0.7
-    ignore_classes: ["negative"]
+    # 网络预测灯条端点；单位米，部署前按实际装甲板测量
+    geometry.small_width: 0.135
+    geometry.small_height: 0.055
+    geometry.large_width: 0.230
+    geometry.large_height: 0.055

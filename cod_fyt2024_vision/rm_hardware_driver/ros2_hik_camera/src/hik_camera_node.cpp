@@ -2,6 +2,7 @@
 // ROS
 #include <camera_info_manager/camera_info_manager.hpp>
 #include <image_transport/image_transport.hpp>
+#include <limits>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/utilities.hpp>
@@ -42,13 +43,7 @@ public:
     RCLCPP_ERROR(this->get_logger(), "SetBayerCvtQuality failed:[%x]", nRet);
     //---
 
-    // Get camera infomation
-    MV_CC_GetImageInfo(camera_handle_, &img_info_);
-    image_msg_.data.reserve(img_info_.nHeightMax * img_info_.nWidthMax * 3);
-
     // Init convert param
-    convert_param_.nWidth = img_info_.nWidthValue;
-    convert_param_.nHeight = img_info_.nHeightValue;
     convert_param_.enDstPixelType = PixelType_Gvsp_RGB8_Packed;
 
     bool use_sensor_data_qos = this->declare_parameter("use_sensor_data_qos", true);
@@ -86,25 +81,45 @@ public:
       while (rclcpp::ok()) {
         nRet = MV_CC_GetImageBuffer(camera_handle_, &out_frame, 1000);
         if (MV_OK == nRet) {
-          convert_param_.pDstBuffer = image_msg_.data.data();
-          convert_param_.nDstBufferSize = image_msg_.data.size();
-          convert_param_.pSrcData = out_frame.pBufAddr;
-          convert_param_.nSrcDataLen = out_frame.stFrameInfo.nFrameLen;
-          convert_param_.enSrcPixelType = out_frame.stFrameInfo.enPixelType;
-
-          MV_CC_ConvertPixelType(camera_handle_, &convert_param_);
-
-          image_msg_.header.stamp = this->now();
-          image_msg_.height = out_frame.stFrameInfo.nHeight;
-          image_msg_.width = out_frame.stFrameInfo.nWidth;
-          image_msg_.step = out_frame.stFrameInfo.nWidth * 3;
-          image_msg_.data.resize(image_msg_.width * image_msg_.height * 3);
-
-          camera_info_msg_.header = image_msg_.header;
-          camera_pub_.publish(image_msg_, camera_info_msg_);
+          const auto width = out_frame.stFrameInfo.nWidth;
+          const auto height = out_frame.stFrameInfo.nHeight;
+          const auto required = static_cast<size_t>(width) * height * 3;
+          if (width == 0 || height == 0 || out_frame.pBufAddr == nullptr ||
+              out_frame.stFrameInfo.nFrameLen == 0 ||
+              required > std::numeric_limits<unsigned int>::max()) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid camera frame: %u x %u, bytes=%u",
+                         static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+                         out_frame.stFrameInfo.nFrameLen);
+            ++fail_conut_;
+          } else {
+            // resize(), unlike reserve(), makes the entire RGB destination writable.
+            image_msg_.data.resize(required);
+            convert_param_.nWidth = width;
+            convert_param_.nHeight = height;
+            convert_param_.pDstBuffer = image_msg_.data.data();
+            convert_param_.nDstBufferSize = static_cast<unsigned int>(image_msg_.data.size());
+            convert_param_.pSrcData = out_frame.pBufAddr;
+            convert_param_.nSrcDataLen = out_frame.stFrameInfo.nFrameLen;
+            convert_param_.enSrcPixelType = out_frame.stFrameInfo.enPixelType;
+            convert_param_.nDstLen = 0;
+            const int convert_status = MV_CC_ConvertPixelType(camera_handle_, &convert_param_);
+            if (convert_status != MV_OK || convert_param_.nDstLen != required) {
+              RCLCPP_ERROR(this->get_logger(),
+                           "RGB conversion failed: status=%x, output=%u, expected=%zu",
+                           convert_status, convert_param_.nDstLen, required);
+              ++fail_conut_;
+            } else {
+              image_msg_.header.stamp = this->now();
+              image_msg_.height = height;
+              image_msg_.width = width;
+              image_msg_.step = width * 3;
+              camera_info_msg_.header = image_msg_.header;
+              camera_pub_.publish(image_msg_, camera_info_msg_);
+              fail_conut_ = 0;
+            }
+          }
 
           MV_CC_FreeImageBuffer(camera_handle_, &out_frame);
-          fail_conut_ = 0;
         } else {
           RCLCPP_WARN(this->get_logger(), "Get buffer failed! nRet: [%x]", nRet);
           MV_CC_StopGrabbing(camera_handle_);
@@ -191,9 +206,7 @@ private:
 
   int nRet = MV_OK;
   void * camera_handle_;
-  MV_IMAGE_BASIC_INFO img_info_;
-
-  MV_CC_PIXEL_CONVERT_PARAM convert_param_;
+  MV_CC_PIXEL_CONVERT_PARAM convert_param_{};
 
   std::string camera_name_;
   std::unique_ptr<camera_info_manager::CameraInfoManager> camera_info_manager_;

@@ -93,7 +93,7 @@ FYT_WARN("test_logger", "a = {}", a);
 
 namespace fs = std::filesystem;
 fs::path model_path =
-  utils::URLResolver::getResolvedPath("package://armor_detector/model/lenet.onnx");
+  utils::URLResolver::getResolvedPath("package://armor_detector/model/rp_0526.onnx");
 
 if (fs::exists(model_path)) {
     std::cout<<model_path.string()<<std::endl;

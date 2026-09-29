@@ -1,15 +1,13 @@
 cmake_minimum_required(VERSION 3.10)
 project(armor_detector)
 
-## Use C++14
+## Use C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 ## By adding -Wall and -Werror, the compiler does not ignore warnings anymore,
 ## enforcing cleaner code.
-add_definitions(-Wall -Werror)
-add_definitions(-ltbb -O3)
-
+add_compile_options(-Wall -Werror)
 
 ## Export compile commands for clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -20,8 +18,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(TBB REQUIRED COMPONENTS tbb)
-find_package(fmt REQUIRED)
+# Only use the stable C ABI. Some OpenVINO distributions set the old C++ ABI
+# directory-wide; preserve ROS/OpenCV compile definitions when loading the SDK.
+get_directory_property(_ros_compile_definitions COMPILE_DEFINITIONS)
+find_package(OpenVINO 2024.6 REQUIRED COMPONENTS Runtime)
+set_property(DIRECTORY PROPERTY COMPILE_DEFINITIONS "${_ros_compile_definitions}")
 ament_auto_find_build_dependencies()
 
 ###########
@@ -33,14 +34,13 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
-${OpenCV_INCLUDE_DIRS}
-${EIGEN3_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
 target_link_libraries(${PROJECT_NAME}
-${OpenCV_LIBS}
-fmt::fmt
-tbb
+  ${OpenCV_LIBS}
+  openvino::runtime::c
 )
 
 
@@ -67,17 +67,18 @@ if(BUILD_TESTING)
   ament_add_gtest(test_node_startup test/test_node_startup.cpp)
   target_link_libraries(test_node_startup ${PROJECT_NAME})
 
-  ament_add_gtest(test_detector test/test_detector.cpp)
-  target_link_libraries(test_detector ${PROJECT_NAME})
-
 endif()
 
 #############
 ## Install ##
 #############
 
+# Model provisioning is explicit and reproducible; never download during CMake.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/model/rp_0526.onnx")
+  message(WARNING "0526 weights are missing. Run armor_detector/model/fetch_model.py before installation.")
+endif()
+install(FILES README.md DESTINATION share/${PROJECT_NAME})
 ament_auto_package(
   INSTALL_TO_SHARE
-  docs
   model
 )
