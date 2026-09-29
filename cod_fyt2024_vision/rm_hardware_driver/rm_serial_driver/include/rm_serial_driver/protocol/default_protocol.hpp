@@ -39,7 +39,7 @@ public:
 
 private:
   FixedPacketTool<16>::SharedPtr packet_tool_;
-  FixedPacketTool<32>::SharedPtr jerk_packet_tool_;
+  FixedPacketTool<32>::SharedPtr feedforward_packet_tool_;
 };
 }  // namespace fyt::serial_driver::protocol
 

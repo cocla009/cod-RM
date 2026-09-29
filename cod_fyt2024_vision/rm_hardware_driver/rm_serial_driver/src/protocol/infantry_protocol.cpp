@@ -15,30 +15,30 @@
 
 #include "rm_serial_driver/protocol/infantry_protocol.hpp"
 
-#include "rm_serial_driver/gimbal_packet_v2.hpp"
+#include "rm_serial_driver/gimbal_packet_v3.hpp"
 
 namespace fyt::serial_driver::protocol {
 ProtocolInfantry::ProtocolInfantry(std::string_view port_name, bool enable_data_print) {
   auto uart_transporter = std::make_shared<UartTransporter>(std::string(port_name));
   packet_tool_ = std::make_shared<FixedPacketTool<16>>(uart_transporter);
-  jerk_packet_tool_ = std::make_shared<FixedPacketTool<32>>(uart_transporter);
+  feedforward_packet_tool_ = std::make_shared<FixedPacketTool<32>>(uart_transporter);
   packet_tool_->enbaleDataPrint(enable_data_print);
 }
 
 void ProtocolInfantry::send(const rm_interfaces::msg::GimbalCmd &data) {
-  if (data.control_mode == static_cast<std::uint8_t>(GimbalPacketMode::kJerk)) {
+  if (data.control_mode == static_cast<std::uint8_t>(GimbalCommandFormat::kFeedforward)) {
     GimbalPacketCommand command;
-    command.mode = GimbalPacketMode::kJerk;
-    command.fire = data.fire_advice;
+    // Control and fire share one mode field; an invalid plan maps to idle.
+    command.mode = commandMode(data.mpc_valid, data.fire_advice);
     command.pitch = static_cast<float>(data.pitch);
     command.yaw = static_cast<float>(data.yaw);
-    command.yaw_jerk = static_cast<float>(data.yaw_jerk);
-    command.pitch_jerk = static_cast<float>(data.pitch_jerk);
-    command.command_dt = static_cast<float>(data.command_dt);
-    command.sequence = static_cast<std::uint32_t>(data.command_sequence);
-    FixedPacket<32> jerk_packet;
-    if (encodeGimbalPacketV2(command, jerk_packet)) {
-      jerk_packet_tool_->sendPacket(jerk_packet);
+    command.pitch_vel = static_cast<float>(data.pitch_velocity);
+    command.pitch_acc = static_cast<float>(data.pitch_acceleration);
+    command.yaw_vel = static_cast<float>(data.yaw_velocity);
+    command.yaw_acc = static_cast<float>(data.yaw_acceleration);
+    FixedPacket<32> feedforward_packet;
+    if (encodeGimbalPacketV3(command, feedforward_packet)) {
+      feedforward_packet_tool_->sendPacket(feedforward_packet);
     }
     return;
   }

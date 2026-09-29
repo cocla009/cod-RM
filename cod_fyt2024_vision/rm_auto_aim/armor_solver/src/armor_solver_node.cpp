@@ -26,9 +26,11 @@
 #include <rm_utils/heartbeat.hpp>
 #include <vector>
 
+#include "armor_solver/gimbal_command_contract.hpp"
+
 namespace fyt::auto_aim {
 ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
-: Node("armor_solver", options), solver_(nullptr) {
+: Node("armor_solver", options) {
   // Register logger
   FYT_REGISTER_LOGGER("armor_solver", "~/fyt2024-log", INFO);
   FYT_INFO("armor_solver", "Starting ArmorSolverNode!");
@@ -199,29 +201,28 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   aimming_line_marker_.color.r = 1.0;
   aimming_line_marker_.color.b = 1.0;
   aimming_line_marker_.color.g = 1.0;
-  trajectory_marker_.ns = "trajectory";
-  trajectory_marker_.type = visualization_msgs::msg::Marker::POINTS;
-  trajectory_marker_.scale.x = 0.01;
-  trajectory_marker_.scale.y = 0.01;
-  trajectory_marker_.color.a = 1.0;
-  trajectory_marker_.color.r = 1.0;
-  trajectory_marker_.color.g = 0.75;
-  trajectory_marker_.color.b = 0.79;
-  trajectory_marker_.points.clear();
-
   marker_pub_ =
     this->create_publisher<visualization_msgs::msg::MarkerArray>("armor_solver/marker", 10);
+
+  // Planner. Built here rather than lazily: setting up the TinyMPC solvers runs
+  // a Riccati pre-computation that would otherwise land in the first callback.
+  bullet_speed_ = this->declare_parameter("solver.bullet_speed", 23.0);
+  fire_gate_.shooting_range_h = this->declare_parameter("solver.shooting_range_height", 0.135);
+  fire_gate_.fire_margin = this->declare_parameter("solver.fire_margin", 0.8);
+  const double min_fire_tolerance_deg =
+    this->declare_parameter("solver.min_fire_tolerance", 1.0);
+  const double max_fire_tolerance_deg =
+    this->declare_parameter("solver.max_fire_tolerance", 4.0);
+  fire_gate_.min_fire_tolerance_rad = min_fire_tolerance_deg * M_PI / 180.0;
+  fire_gate_.max_fire_tolerance_rad =
+    std::max(min_fire_tolerance_deg, max_fire_tolerance_deg) * M_PI / 180.0;
+  planner_ = std::make_unique<Planner>(*this);
 
   // Heartbeat
   heartbeat_ = HeartBeatPublisher::create(this);
 }
 
 void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr armors_msg) {
-  // Lazy initialize solver owing to weak_from_this() can't be called in constructor
-  if (solver_ == nullptr) {
-    solver_ = std::make_unique<Solver>(weak_from_this());
-  }
-
   // Tranform armor position from image frame to world coordinate
   for (auto &armor : armors_msg->armors) {
     geometry_msgs::msg::PoseStamped ps;
@@ -292,19 +293,74 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
   // Solve control command
   rm_interfaces::msg::GimbalCmd control_msg;
   if (target_msg.tracking) {
+    const rclcpp::Time now = this->now();
+    const double to_deg = 180.0 / M_PI;
+
+    const auto plan = planner_->plan(target_msg, (now - time).seconds(), bullet_speed_);
+
+    control_msg.header = target_msg.header;
+    control_msg.header.stamp = now;
+    control_msg.distance = plan.distance;
+    control_msg.yaw = plan.yaw * to_deg;
+    control_msg.pitch = plan.pitch * to_deg;
+    control_msg.yaw_velocity = plan.yaw_vel * to_deg;
+    control_msg.yaw_acceleration = plan.yaw_acc * to_deg;
+    control_msg.pitch_velocity = plan.pitch_vel * to_deg;
+    control_msg.pitch_acceleration = plan.pitch_acc * to_deg;
+    control_msg.mpc_valid = plan.control;
+
+    // Select the feed-forward packet: the planner's velocity and acceleration
+    // are what let the lower controller track a trajectory instead of chasing a
+    // position set point.
+    control_msg.control_mode = static_cast<std::uint8_t>(GimbalCommandFormat::kFeedforward);
+
+    // The planner only knows whether the planned trajectory still tracks its
+    // reference. Confirm against the measured gimbal as well, otherwise a
+    // lagging or saturated lower controller would still be cleared to fire.
+    bool on_target = false;
     try {
-      control_msg = solver_->solve(target_msg, this->now(), tf2_buffer_);
-    } catch (...) {
-      FYT_ERROR("armor_solver", "Something went wrong in solver!");
-      control_msg.yaw_diff = 0;
-      control_msg.pitch_diff = 0;
-      control_msg.distance = -1;
-      control_msg.fire_advice = false;
+      const auto gimbal_tf = tf2_buffer_->lookupTransform(
+        target_msg.header.frame_id, "gimbal_link", tf2::TimePointZero);
+      tf2::Quaternion tf_q;
+      tf2::fromMsg(gimbal_tf.transform.rotation, tf_q);
+      double roll = 0.0;
+      double measured_pitch = 0.0;
+      double measured_yaw = 0.0;
+      tf2::Matrix3x3(tf_q).getRPY(roll, measured_pitch, measured_yaw);
+
+      control_msg.yaw_diff = (plan.yaw - measured_yaw) * to_deg;
+      control_msg.pitch_diff = (plan.pitch - measured_pitch) * to_deg;
+      on_target = isAimOnTarget(measured_yaw,
+                                measured_pitch,
+                                plan.yaw,
+                                plan.pitch,
+                                plan.distance,
+                                static_cast<size_t>(target_msg.armors_num),
+                                fire_gate_);
+    } catch (const tf2::TransformException &ex) {
+      // Without the gimbal pose the second gate cannot be evaluated, so the
+      // shot is withheld rather than assumed safe.
+      FYT_WARN("armor_solver", "Gimbal transform unavailable: {}", ex.what());
+      control_msg.yaw_diff = 0.0;
+      control_msg.pitch_diff = 0.0;
     }
+
+    control_msg.fire_advice = plan.fire && on_target;
     if (tracker_->tracker_state == Tracker::TEMP_LOST) {
       control_msg.fire_advice = false;
     }
+    if (!isValidGimbalCommand(control_msg)) {
+      FYT_WARN("armor_solver", "Dropping invalid gimbal command");
+      control_msg.fire_advice = false;
+      control_msg.mpc_valid = false;
+    }
   } else {
+    // Nothing trackable. The legacy packet had no way to say "do not drive the
+    // gimbal", so it used to send yaw = 0, which is a real direction. The
+    // feed-forward format carries an explicit idle mode; mpc_valid = false makes
+    // the protocol layer select it.
+    control_msg.control_mode = static_cast<std::uint8_t>(GimbalCommandFormat::kFeedforward);
+    control_msg.mpc_valid = false;
     control_msg.yaw_diff = 0;
     control_msg.pitch_diff = 0;
     control_msg.distance = -1;
@@ -393,31 +449,17 @@ void ArmorSolverNode::publishMarkers(const rm_interfaces::msg::Target &target_ms
       aimming_line_marker_.color.b = 1;
     }
 
-    trajectory_marker_.action = visualization_msgs::msg::Marker::ADD;
-    trajectory_marker_.header.frame_id = "gimbal_link";
-    trajectory_marker_.header.stamp = this->now();
-    trajectory_marker_.points.clear();
-    for (const auto &point :
-         solver_->getTrajectory(gimbal_cmd.distance, gimbal_cmd.pitch * M_PI / 180)) {
-      geometry_msgs::msg::Point p;
-      p.x = point.first;
-      p.z = point.second;
-      trajectory_marker_.points.emplace_back(p);
-    }
-
   } else {
     position_marker_.action = visualization_msgs::msg::Marker::DELETE;
     linear_v_marker_.action = visualization_msgs::msg::Marker::DELETE;
     angular_v_marker_.action = visualization_msgs::msg::Marker::DELETE;
     armors_marker_.action = visualization_msgs::msg::Marker::DELETE;
-    trajectory_marker_.action = visualization_msgs::msg::Marker::DELETE;
     aimming_line_marker_.action = visualization_msgs::msg::Marker::DELETE;
   }
 
   visualization_msgs::msg::MarkerArray marker_array;
 
   marker_array.markers.emplace_back(position_marker_);
-  marker_array.markers.emplace_back(trajectory_marker_);
   marker_array.markers.emplace_back(linear_v_marker_);
   marker_array.markers.emplace_back(angular_v_marker_);
   marker_array.markers.emplace_back(armors_marker_);

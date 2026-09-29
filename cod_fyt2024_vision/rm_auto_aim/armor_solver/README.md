@@ -25,21 +25,29 @@
 * `tracker.max_match_yaw_diff` (`double`, default: 0.5) - 两帧间目标同一块装甲板可匹配的最大yaw角差（大于这个值则认为装甲板发生跳变）
 * `tracker.tracking_thres` (`int`, default: 2) - `DETECTING` 状态进入 `TRACKING` 状态需要连续识别到的帧数
 * `tracker.lost_thres` (`double`, default: 1.0) - `TRACKING` 状态进入 `LOST` 状态需要连续丢失的时间（s）
-* `solver.prediction_delay` (`double`) - 预测延迟时间（s）
-* `solver.controller_delay` (`double`) - 控制执行延迟时间（s）
-* `solver.max_tracking_v_yaw` (`double`) - 近距离高速旋转时进入中心跟踪的角速度阈值
-* `solver.center_tracking_distance` (`double`) - 中心跟踪的距离阈值（m）
-* `solver.min_switching_v_yaw` (`double`, default: 1.0) - 低速最近板锁定与高速方向选板的切换阈值（rad/s）
-* `solver.coming_angle` / `solver.leaving_angle` (`double`) - 高速旋转时的非对称选板窗口（度）
 * `solver.yaw_offset` / `solver.pitch_offset` (`double`, default: 0.0) - 机械零位和安装误差补偿（度）
 * `solver.high_yaw_pitch_compensation_threshold` (`double`, default: 6.0) - 启用高速 pitch 下压补偿的角速度阈值（rad/s）
 * `solver.high_yaw_pitch_compensation_reference` (`double`, default: 10.0) - 高速 pitch 补偿达到上限的参考角速度（rad/s）
 * `solver.max_high_yaw_pitch_offset` (`double`, default: 1.2) - 高速 pitch 下压补偿上限（度）
-* `solver.fire_margin`、`solver.min_fire_tolerance`、`solver.max_fire_tolerance` - 动态开火窗口参数
-* `solver.bullet_speed` (`double`) - 子弹速度（m/s）
-* `solver.gravity` (`double`, default: 9.8) - 重力加速度
-* `solver.compensator_type` (`string`, default: "ideal") - 补偿器类型
-* `solver.resistance` (`double`, default: 0.001) - 空气阻力
+* `solver.bullet_speed` (`double`, default: 23.0) - 子弹速度（m/s）
+
+第二道开火闸门（实测云台角度检查，与规划器自身的判据做与门）：
+
+* `solver.shooting_range_height` (`double`, default: 0.135) - 装甲板有效高度（m）
+* `solver.fire_margin` (`double`, default: 0.8) - 动态开火窗口的安全系数
+* `solver.min_fire_tolerance` / `solver.max_fire_tolerance` (`double`, default: 1.0 / 4.0) - 开火角度容差的上下限（度）
+
+轨迹规划器（移植自 [sp_vision_25](https://github.com/TongjiSuperPower/sp_vision_25)，见 `thirdparty/LICENSE-TinyMPC`）：
+
+* `solver.planner.fire_thresh` (`double`, default: 0.003) - "规划 vs 参考"在命中时刻的允许差距（rad）
+* `solver.planner.max_yaw_acc` / `solver.planner.max_pitch_acc` (`double`, default: 50.0 / 100.0) - 加速度约束（rad/s²）
+* `solver.planner.Q_yaw` / `solver.planner.Q_pitch` (`double[]`, default: [9e6, 0.0]) - 状态权重，两项依次为位置和速度
+* `solver.planner.R_yaw` / `solver.planner.R_pitch` (`double`, default: 1.0) - 控制量权重
+* `solver.planner.decision_speed` (`double`, default: 8.0) - 高速/低速延迟选择的角速度阈值（rad/s）
+* `solver.planner.high_speed_delay_time` / `solver.planner.low_speed_delay_time` (`double`, default: 0.030 / 0.015) - 管道延迟补偿（s）
+
+**注**：不再存在 `coming_angle` / `leaving_angle` / `min_switching_v_yaw` 等选板启发式参数。
+规划器的参考轨迹直接取"水平距离最近的装甲板"，换板跳变由 TinyMPC 的加速度约束平滑。
 
 
 ## ArmorSolverNode

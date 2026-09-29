@@ -24,11 +24,26 @@ ament_auto_find_build_dependencies()
 ## Build ##
 ###########
 
+## TinyMPC, vendored from TongjiSuperPower/sp_vision_25 (MIT, see
+## thirdparty/LICENSE-TinyMPC). Kept out of src/ on purpose: ament_auto_add_library
+## globs src/ recursively, so vendored sources placed there would also be compiled
+## into the main library under -Wall -Werror.
+add_library(tinympc STATIC
+  thirdparty/tinympc/admm.cpp
+  thirdparty/tinympc/tiny_api.cpp
+  thirdparty/tinympc/rho_benchmark.cpp
+)
+target_include_directories(tinympc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
+target_link_libraries(tinympc PUBLIC Eigen3::Eigen)
+set_target_properties(tinympc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+## Upstream code trips -Wdeprecated-declarations and -Wunused-variable; silence
+## warnings for this target only rather than patching vendored files.
+target_compile_options(tinympc PRIVATE -w)
+
 ament_auto_add_library(${PROJECT_NAME} SHARED
   DIRECTORY src
 )
-target_sources(${PROJECT_NAME} PRIVATE src/tracker_logic.cpp)
-target_sources(${PROJECT_NAME} PRIVATE src/gimbal_mpc.cpp src/aim_reference.cpp)
+target_link_libraries(${PROJECT_NAME} tinympc)
 
 rclcpp_components_register_node(${PROJECT_NAME}
   PLUGIN fyt::auto_aim::ArmorSolverNode
@@ -58,40 +73,26 @@ if(BUILD_TESTING)
   ament_add_gtest(test_target_ekf_model test/test_target_ekf_model.cpp)
   target_link_libraries(test_target_ekf_model ${PROJECT_NAME})
 
-  ament_add_gtest(test_trajectory_planner test/test_trajectory_planner.cpp)
-  target_link_libraries(test_trajectory_planner ${PROJECT_NAME})
-
   add_executable(test_tracker_logic test/test_tracker_logic.cpp src/tracker_logic.cpp)
   target_include_directories(test_tracker_logic PRIVATE include)
   add_test(NAME tracker_logic COMMAND test_tracker_logic)
 
-  add_executable(test_gimbal_mpc test/test_gimbal_mpc.cpp src/gimbal_mpc.cpp)
-  target_include_directories(test_gimbal_mpc PRIVATE include)
-  target_link_libraries(test_gimbal_mpc Eigen3::Eigen)
-  add_test(NAME gimbal_mpc COMMAND test_gimbal_mpc)
+  # Guards the vendored solver before anything is built on top of it.
+  add_executable(test_tinympc_smoke test/test_tinympc_smoke.cpp)
+  target_link_libraries(test_tinympc_smoke tinympc)
+  add_test(NAME tinympc_smoke COMMAND test_tinympc_smoke)
 
-  add_executable(test_gimbal_mpc_closed_loop test/test_gimbal_mpc_closed_loop.cpp
-    src/gimbal_mpc.cpp src/aim_reference.cpp src/trajectory_planner.cpp)
-  target_include_directories(test_gimbal_mpc_closed_loop PRIVATE include)
-  target_link_libraries(test_gimbal_mpc_closed_loop Eigen3::Eigen)
-  add_test(NAME gimbal_mpc_closed_loop COMMAND test_gimbal_mpc_closed_loop)
-
-  add_executable(test_mpc_protocol_closed_loop
-    test/test_mpc_protocol_closed_loop.cpp src/gimbal_mpc.cpp)
-  target_include_directories(test_mpc_protocol_closed_loop PRIVATE
-    include ${CMAKE_CURRENT_SOURCE_DIR}/../../rm_hardware_driver/rm_serial_driver/include)
-  add_test(NAME mpc_protocol_closed_loop COMMAND test_mpc_protocol_closed_loop)
+  # Hardware-free planner validation: synthetic target, no camera, no MCU.
+  # Plain executable rather than a gtest: it reports its own pass/fail summary
+  # and needs no assertion framework.
+  add_executable(test_planner_offline test/test_planner_offline.cpp)
+  target_link_libraries(test_planner_offline ${PROJECT_NAME})
+  add_test(NAME planner_offline COMMAND test_planner_offline)
 
   add_executable(test_gimbal_command_contract test/test_gimbal_command_contract.cpp)
   target_include_directories(test_gimbal_command_contract PRIVATE include)
   ament_target_dependencies(test_gimbal_command_contract rm_interfaces)
   add_test(NAME gimbal_command_contract COMMAND test_gimbal_command_contract)
-
-  add_executable(test_aim_reference test/test_aim_reference.cpp
-    src/aim_reference.cpp src/trajectory_planner.cpp)
-  target_include_directories(test_aim_reference PRIVATE include)
-  target_link_libraries(test_aim_reference Eigen3::Eigen)
-  add_test(NAME aim_reference COMMAND test_aim_reference)
 
 endif()
 

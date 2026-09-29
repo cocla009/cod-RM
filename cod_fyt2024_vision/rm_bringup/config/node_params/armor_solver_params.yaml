@@ -26,39 +26,30 @@
       lost_time_thres: 1.0
     
     solver:
-      prediction_delay: 0.045
-      controller_delay: 0.025
-      max_tracking_v_yaw: 4.5 # 近距离高速旋转时进入中心跟踪
-      center_tracking_distance: 1.5
-      min_switching_v_yaw: 1.0 # 低速最近板锁定与高速方向选板的切换阈值
-      coming_angle: 55.0
-      leaving_angle: 20.0
       yaw_offset: 0.0
       pitch_offset: 0.0
       high_yaw_pitch_compensation_threshold: 6.0
       high_yaw_pitch_compensation_reference: 10.0
       max_high_yaw_pitch_offset: 1.2
+
+      # 第二道开火闸门：实测云台是否真的对准装甲板。
+      # 规划器的 plan.fire 只检查"规划是否仍在跟随参考"，看不到下位机滞后。
+      shooting_range_height: 0.135
       fire_margin: 0.8
       min_fire_tolerance: 1.0
       max_fire_tolerance: 4.0
+
       bullet_speed: 23.0
-      compensator_type: "ideal" # ideal 或 resistance
-      gravity: 10.0
-      resistance: 0.092
-      iteration_times: 50
-      mpc:
-        enabled: true
-        dt: 0.01
-        horizon: 40
-        preview_steps: 0
-        actuator_delay: 0.0
-        position_weight: 40.0
-        velocity_weight: 4.0
-        acceleration_weight: 0.2
-        jerk_weight: 0.05
-        terminal_weight: 80.0
-        max_velocity: 12.0
-        max_acceleration: 50.0
-        max_jerk: 500.0
-        step_size: 0.002
-        max_iterations: 12
+
+      # 轨迹规划器（移植自 sp_vision_25，参数取自其步兵实机配置）
+      planner:
+        fire_thresh: 0.003
+        max_yaw_acc: 50.0
+        Q_yaw: [9e6, 0.0]
+        R_yaw: 1.0
+        max_pitch_acc: 100.0
+        Q_pitch: [9e6, 0.0]
+        R_pitch: 1.0
+        decision_speed: 8.0
+        high_speed_delay_time: 0.030
+        low_speed_delay_time: 0.015

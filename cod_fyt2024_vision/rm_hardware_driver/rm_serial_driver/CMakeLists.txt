@@ -56,9 +56,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fixed_packet_tool test/test_fixed_packet_tool.cpp)
   target_link_libraries(test_fixed_packet_tool ${PROJECT_NAME})
 
-  add_executable(test_gimbal_packet_v2 test/test_gimbal_packet_v2.cpp)
-  target_include_directories(test_gimbal_packet_v2 PRIVATE include)
-  add_test(NAME gimbal_packet_v2 COMMAND test_gimbal_packet_v2)
+  add_executable(test_gimbal_packet_v3 test/test_gimbal_packet_v3.cpp)
+  target_include_directories(test_gimbal_packet_v3 PRIVATE include)
+  add_test(NAME gimbal_packet_v3 COMMAND test_gimbal_packet_v3)
 
   add_executable(test_gimbal_command_receiver test/test_gimbal_command_receiver.cpp)
   target_include_directories(test_gimbal_command_receiver PRIVATE include)

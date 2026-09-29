@@ -35,9 +35,11 @@
 #include <string>
 #include <vector>
 // project
-#include "armor_solver/armor_solver.hpp"
 #include "armor_solver/armor_tracker.hpp"
+#include "armor_solver/fire_gate.hpp"
+#include "armor_solver/planner.hpp"
 #include "rm_interfaces/msg/armors.hpp"
+#include "rm_interfaces/msg/gimbal_cmd.hpp"
 #include "rm_interfaces/msg/measurement.hpp"
 #include "rm_interfaces/msg/target.hpp"
 #include "rm_utils/heartbeat.hpp"
@@ -70,8 +72,10 @@ private:
   double lost_time_thres_;
   std::unique_ptr<Tracker> tracker_;
 
-  // Armor Solver
-  std::unique_ptr<Solver> solver_;
+  // Gimbal trajectory planner
+  std::unique_ptr<Planner> planner_;
+  FireGateParams fire_gate_;
+  double bullet_speed_;
 
   // Subscriber with tf2 message_filter
   std::string target_frame_;
@@ -91,7 +95,6 @@ private:
   visualization_msgs::msg::Marker position_marker_;
   visualization_msgs::msg::Marker linear_v_marker_;
   visualization_msgs::msg::Marker angular_v_marker_;
-  visualization_msgs::msg::Marker trajectory_marker_;
   visualization_msgs::msg::Marker armors_marker_;
   visualization_msgs::msg::Marker aimming_line_marker_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
