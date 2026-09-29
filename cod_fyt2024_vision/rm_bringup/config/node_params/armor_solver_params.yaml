@@ -4,6 +4,10 @@
     target_frame: odom
     max_armor_distance: 10.0
 
+    # 自瞄模式下超过此时间未收到装甲板消息，就持续发布"保持角度+禁火"指令，
+    # 避免检测器卡死时下位机一直执行旧指令
+    safety.command_timeout: 0.2
+
     ekf:
       sigma2_q_x: 10.0
       sigma2_q_y: 10.0

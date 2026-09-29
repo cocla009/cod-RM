@@ -31,6 +31,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 // std
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,7 +42,9 @@
 #include "rm_interfaces/msg/armors.hpp"
 #include "rm_interfaces/msg/gimbal_cmd.hpp"
 #include "rm_interfaces/msg/measurement.hpp"
+#include "rm_interfaces/msg/serial_receive_data.hpp"
 #include "rm_interfaces/msg/target.hpp"
+#include "rm_utils/common.hpp"
 #include "rm_utils/heartbeat.hpp"
 #include "rm_utils/logger/log.hpp"
 
@@ -53,6 +56,17 @@ public:
 
 private:
   void armorsCallback(const rm_interfaces::msg::Armors::SharedPtr armors_ptr);
+
+  // Tracks the operator-selected mode and the gimbal's reported pose.
+  void serialStateCallback(const rm_interfaces::msg::SerialReceiveData::ConstSharedPtr state);
+
+  // Keeps commands flowing when the detector stalls. The tf2 message filter can
+  // drop frames before armorsCallback runs, in which case nothing at all would
+  // be published and the lower controller would keep the last command.
+  void commandWatchdog();
+
+  // A command that holds the gimbal where it is with the trigger released.
+  rm_interfaces::msg::GimbalCmd noFireCommand() const;
 
   void publishMarkers(const rm_interfaces::msg::Target &target_msg,
                       const rm_interfaces::msg::GimbalCmd &gimbal_cmd) noexcept;
@@ -90,6 +104,17 @@ private:
   // Publisher
   rclcpp::Publisher<rm_interfaces::msg::Target>::SharedPtr target_pub_;
   rclcpp::Publisher<rm_interfaces::msg::GimbalCmd>::SharedPtr gimbal_pub_;
+
+  // Safety watchdog state
+  rclcpp::Subscription<rm_interfaces::msg::SerialReceiveData>::SharedPtr serial_state_sub_;
+  rclcpp::TimerBase::SharedPtr command_watchdog_;
+  std::chrono::steady_clock::time_point last_armors_time_ = std::chrono::steady_clock::now();
+  double command_timeout_ = 0.2;
+  double feedback_yaw_ = 0.0;
+  double feedback_pitch_ = 0.0;
+  bool have_feedback_ = false;
+  bool have_mode_feedback_ = false;
+  bool auto_aim_active_ = false;
 
   // Visualization marker publisher
   visualization_msgs::msg::Marker position_marker_;

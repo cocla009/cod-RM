@@ -21,8 +21,10 @@
 #include <tf2/exceptions.h>
 // std
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <rm_utils/heartbeat.hpp>
 #include <vector>
 
@@ -167,6 +169,17 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   gimbal_pub_ = this->create_publisher<rm_interfaces::msg::GimbalCmd>("armor_solver/cmd_gimbal",
                                                                       rclcpp::SensorDataQoS());
 
+  command_timeout_ = this->declare_parameter("safety.command_timeout", 0.2);
+  if (!std::isfinite(command_timeout_) || command_timeout_ <= 0.0) {
+    throw std::invalid_argument("safety.command_timeout must be finite and positive");
+  }
+  serial_state_sub_ = this->create_subscription<rm_interfaces::msg::SerialReceiveData>(
+    "serial/receive",
+    rclcpp::SensorDataQoS(),
+    std::bind(&ArmorSolverNode::serialStateCallback, this, std::placeholders::_1));
+  command_watchdog_ = this->create_wall_timer(
+    std::chrono::milliseconds(50), std::bind(&ArmorSolverNode::commandWatchdog, this));
+
   // Visualization Marker Publisher
   // See http://wiki.ros.org/rviz/DisplayTypes/Marker
   position_marker_.ns = "position";
@@ -222,7 +235,69 @@ ArmorSolverNode::ArmorSolverNode(const rclcpp::NodeOptions &options)
   heartbeat_ = HeartBeatPublisher::create(this);
 }
 
+void ArmorSolverNode::serialStateCallback(
+  const rm_interfaces::msg::SerialReceiveData::ConstSharedPtr state) {
+  const bool active =
+    state->mode == VisionMode::AUTO_AIM_RED || state->mode == VisionMode::AUTO_AIM_BLUE;
+  // Entering auto-aim must not be judged against the previous engagement's age.
+  if (active && !auto_aim_active_) last_armors_time_ = std::chrono::steady_clock::now();
+  if (!active && auto_aim_active_) tracker_->tracker_state = Tracker::LOST;
+  have_mode_feedback_ = true;
+  auto_aim_active_ = active;
+  if (std::isfinite(state->yaw) && std::isfinite(state->pitch)) {
+    // Degrees, in the lower controller's convention. The command path uses the
+    // same convention, so these can be echoed back as a hold position.
+    feedback_yaw_ = state->yaw;
+    feedback_pitch_ = state->pitch;
+    have_feedback_ = true;
+  }
+}
+
+rm_interfaces::msg::GimbalCmd ArmorSolverNode::noFireCommand() const {
+  rm_interfaces::msg::GimbalCmd command;
+  command.header.stamp = this->now();
+  command.header.frame_id = target_frame_;
+  command.distance = -1.0;
+  command.fire_advice = false;
+  // mpc_valid = false makes the protocol layer emit the idle mode, i.e. "do not
+  // drive the gimbal", so it holds station instead of swinging to yaw = 0.
+  command.mpc_valid = false;
+  command.control_mode = static_cast<std::uint8_t>(GimbalCommandFormat::kFeedforward);
+  // Also carry the last reported pose: a lower controller that falls back to
+  // position tracking then holds this angle rather than zero.
+  if (have_feedback_) {
+    command.yaw = feedback_yaw_;
+    command.pitch = feedback_pitch_;
+  }
+  return command;
+}
+
+void ArmorSolverNode::commandWatchdog() {
+  if (!auto_aim_active_) return;
+  const double age = std::chrono::duration<double>(
+                       std::chrono::steady_clock::now() - last_armors_time_)
+                       .count();
+  if (age < command_timeout_) return;
+
+  // No armour message for command_timeout_. Drop the track so a stale target is
+  // not resumed on the next frame, and keep commands flowing with the trigger
+  // released.
+  tracker_->tracker_state = Tracker::LOST;
+  rm_interfaces::msg::Target invalid_target;
+  invalid_target.header.stamp = this->now();
+  invalid_target.header.frame_id = target_frame_;
+  invalid_target.tracking = false;
+  target_pub_->publish(invalid_target);
+  gimbal_pub_->publish(noFireCommand());
+}
+
 void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr armors_msg) {
+  // Ignore detection while the operator has not selected auto-aim, so the rune
+  // solver keeps sole control of the gimbal.
+  if (have_mode_feedback_ && !auto_aim_active_) return;
+  auto_aim_active_ = true;
+  last_armors_time_ = std::chrono::steady_clock::now();
+
   // Tranform armor position from image frame to world coordinate
   for (auto &armor : armors_msg->armors) {
     geometry_msgs::msg::PoseStamped ps;
@@ -232,6 +307,15 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
       armor.pose = tf2_buffer_->transform(ps, target_frame_).pose;
     } catch (const tf2::TransformException &ex) {
       FYT_ERROR("armor_solver", "Transform error: {}", ex.what());
+      // Returning silently would leave the previous command standing; drop the
+      // track and publish a holding command instead.
+      tracker_->tracker_state = Tracker::LOST;
+      rm_interfaces::msg::Target invalid_target;
+      invalid_target.header = armors_msg->header;
+      invalid_target.header.frame_id = target_frame_;
+      invalid_target.tracking = false;
+      target_pub_->publish(invalid_target);
+      gimbal_pub_->publish(noFireCommand());
       return;
     }
   }
@@ -296,7 +380,15 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
     const rclcpp::Time now = this->now();
     const double to_deg = 180.0 / M_PI;
 
-    const auto plan = planner_->plan(target_msg, (now - time).seconds(), bullet_speed_);
+    Plan plan;
+    try {
+      plan = planner_->plan(target_msg, (now - time).seconds(), bullet_speed_);
+    } catch (const std::exception &ex) {
+      FYT_ERROR("armor_solver", "Planning failed: {}", ex.what());
+      gimbal_pub_->publish(noFireCommand());
+      last_time_ = time;
+      return;
+    }
 
     control_msg.header = target_msg.header;
     control_msg.header.stamp = now;
@@ -355,16 +447,9 @@ void ArmorSolverNode::armorsCallback(const rm_interfaces::msg::Armors::SharedPtr
       control_msg.mpc_valid = false;
     }
   } else {
-    // Nothing trackable. The legacy packet had no way to say "do not drive the
-    // gimbal", so it used to send yaw = 0, which is a real direction. The
-    // feed-forward format carries an explicit idle mode; mpc_valid = false makes
-    // the protocol layer select it.
-    control_msg.control_mode = static_cast<std::uint8_t>(GimbalCommandFormat::kFeedforward);
-    control_msg.mpc_valid = false;
-    control_msg.yaw_diff = 0;
-    control_msg.pitch_diff = 0;
-    control_msg.distance = -1;
-    control_msg.fire_advice = false;
+    // Nothing trackable: release the gimbal instead of commanding yaw = 0,
+    // which the legacy packet forced and which is a real direction.
+    control_msg = noFireCommand();
   }
   gimbal_pub_->publish(control_msg);
 

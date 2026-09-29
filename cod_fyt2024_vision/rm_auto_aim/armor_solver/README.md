@@ -13,12 +13,14 @@
 ### 订阅话题
 
 *  `armor_detector/armors` (`rm_interfaces/msg/Armors`) - 识别到的装甲板信息
+*  `serial/receive` (`rm_interfaces/msg/SerialReceiveData`) - 当前模式及云台角度，用于失效时禁火和保持角度
 
   
 ### 参数 
 
 * `debug` (`bool`, default: false) - 是否开启调试模式
 * `target_frame` (`string`, default: "odom") - 目标坐标系
+* `safety.command_timeout` (`double`, default: 0.2) - 自瞄模式下超过此时间未收到装甲板消息时，每 50 ms 发布一次"保持角度+禁火"指令；非自瞄模式下不发送
 * `ekf.sigma2_q_x/y/z/yaw/r` - 分别控制平面、竖直、偏航和半径状态的过程噪声
 * `ekf.r_azimuth/r_elevation/r_distance/r_armor_yaw` - 球面观测协方差参数，依次对应方位角、俯仰角、距离和装甲板 yaw
 * `tracker.max_match_distance` (`double`, default: 0.5) - 两帧间目标可匹配的最大距离
